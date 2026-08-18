@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="logo">⚡</div>
+        <div class="brand">
+          <div class="name">SpeedDownloader</div>
+          <div class="status">
+            <span id="dot" class="dot off"></span>
+            <span id="statusText">…</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="section">
+        <input
+          id="urlInput"
+          type="text"
+          placeholder="https://example.com/file.zip"
+          spellcheck="false"
+        />
+        <button id="grabBtn" class="grab">⚡ 下载</button>
+      </div>
+
+      <label class="toggle">
+        <input id="autoGrab" type="checkbox" />
+        <span class="track"></span>
+        <span id="autoGrabText">自动拦截浏览器下载</span>
+      </label>
+
+      <div class="tasks">
+        <div class="tasks-title" id="tasksTitle">最近任务</div>
+        <div id="taskList" class="task-list"></div>
+        <div id="taskEmpty" class="task-empty">暂无任务</div>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
