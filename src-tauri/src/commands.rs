@@ -1,8 +1,126 @@
 use crate::settings::Settings;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
+
+const UPDATE_REPO: &str = "alex200376/speedy-downloader";
+
+#[derive(Serialize)]
+pub struct UpdateInfo {
+    pub current: String,
+    pub latest: String,
+    pub has_update: bool,
+    pub title: String,
+    pub notes: String,
+    pub asset_name: String,
+    pub asset_url: String,
+    pub asset_size: u64,
+    pub release_url: String,
+}
+
+#[derive(Deserialize)]
+struct GhRelease {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    assets: Vec<GhAsset>,
+}
+
+#[derive(Deserialize)]
+struct GhAsset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+fn parse_version(s: &str) -> (u64, u64, u64) {
+    let clean = s.trim().trim_start_matches(['v', 'V']);
+    let parts: Vec<&str> = clean.split('.').collect();
+    let get = |i: usize| -> u64 {
+        parts
+            .get(i)
+            .and_then(|p| p.split('-').next())
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(0)
+    };
+    (get(0), get(1), get(2))
+}
+
+#[tauri::command]
+pub async fn check_update() -> Result<UpdateInfo, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest"))
+        .header("User-Agent", "SpeedDownloader")
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "GitHub API {} {}",
+            resp.status().as_u16(),
+            resp.status().canonical_reason().unwrap_or("")
+        ));
+    }
+    let rel: GhRelease = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析失败: {e}"))?;
+    let latest = rel.tag_name.trim_start_matches(['v', 'V']).to_string();
+    let has_update = parse_version(&latest) > parse_version(&current);
+    let asset = rel
+        .assets
+        .iter()
+        .find(|a| {
+            let n = a.name.to_lowercase();
+            n.contains("setup") || n.ends_with(".exe")
+        })
+        .or_else(|| rel.assets.first());
+    let (asset_name, asset_url, asset_size) = match asset {
+        Some(a) => (a.name.clone(), a.browser_download_url.clone(), a.size.unwrap_or(0)),
+        None => (String::new(), String::new(), 0),
+    };
+    Ok(UpdateInfo {
+        current,
+        latest,
+        has_update,
+        title: rel.name.unwrap_or(rel.tag_name),
+        notes: rel.body.unwrap_or_default(),
+        asset_name,
+        asset_url,
+        asset_size,
+        release_url: rel.html_url,
+    })
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 pub struct ExtensionInfo {
@@ -173,5 +291,15 @@ mod tests {
         assert!(to.join("manifest.json").exists());
         assert!(to.join("background.js").exists());
         let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn version_parse_compares_correctly() {
+        assert_eq!(parse_version("1.0.1"), (1, 0, 1));
+        assert_eq!(parse_version("v2.3.4"), (2, 3, 4));
+        assert_eq!(parse_version("2.0.0-beta.1"), (2, 0, 0));
+        assert!(parse_version("1.1.0") > parse_version("1.0.9"));
+        assert!(!(parse_version("1.0.1") > parse_version("1.0.1")));
+        assert!(!(parse_version("0.9.9") > parse_version("1.0.0")));
     }
 }

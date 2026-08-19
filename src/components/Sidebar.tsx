@@ -60,8 +60,8 @@ export default function Sidebar({ onNew, onSettings }: Props) {
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-[var(--border-soft)] bg-[var(--bg-2)]/60">
       <div className="flex items-center gap-2.5 px-5 pt-5 pb-4">
-        <div className="app-gradient flex h-9 w-9 items-center justify-center rounded-xl text-white shadow-lg shadow-indigo-500/30">
-          <ZapIcon width={20} height={20} />
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
+          <ZapIcon width={19} height={19} />
         </div>
         <div>
           <div className="text-[15px] font-bold leading-tight tracking-tight">{t("appName")}</div>
@@ -69,11 +69,8 @@ export default function Sidebar({ onNew, onSettings }: Props) {
       </div>
 
       <div className="px-3 pb-2">
-        <button
-          onClick={onNew}
-          className="app-gradient flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:shadow-indigo-500/40 hover:brightness-110 active:scale-[0.98]"
-        >
-          <PlusIcon width={16} height={16} />
+        <button onClick={onNew} className="btn btn-primary w-full">
+          <PlusIcon width={15} height={15} />
           {t("header.newDownload")}
         </button>
       </div>
@@ -83,7 +80,7 @@ export default function Sidebar({ onNew, onSettings }: Props) {
           <button
             key={item.key}
             onClick={() => setFilter(item.key)}
-            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13.5px] transition ${
+            className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-[13.5px] transition ${
               filter === item.key
                 ? "bg-[var(--accent-soft)] font-semibold text-[var(--accent)]"
                 : "text-[var(--text-2)] hover:bg-[var(--panel)] hover:text-[var(--text)]"
@@ -95,9 +92,9 @@ export default function Sidebar({ onNew, onSettings }: Props) {
             <span className="flex-1 text-left">{t(`nav.${item.key}`)}</span>
             {item.count > 0 && (
               <span
-                className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
+                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
                   filter === item.key
-                    ? "bg-[var(--accent)] text-white"
+                    ? "bg-[var(--text)] text-[var(--bg)]"
                     : "bg-[var(--panel-2)] text-[var(--muted)]"
                 }`}
               >
@@ -109,26 +106,18 @@ export default function Sidebar({ onNew, onSettings }: Props) {
       </nav>
 
       <div className="flex items-center gap-2 border-t border-[var(--border-soft)] px-3 py-3">
-        <button
-          onClick={toggleTheme}
-          title="Toggle theme"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-2)] transition hover:bg-[var(--panel)] hover:text-[var(--text)]"
-        >
+        <button onClick={toggleTheme} title="Toggle theme" className="icon-btn shrink-0">
           {theme === "dark" ? <SunIcon width={17} height={17} /> : <MoonIcon width={17} height={17} />}
         </button>
         <button
           onClick={toggleLanguage}
           title="Language / 语言"
-          className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-[12.5px] font-semibold text-[var(--text-2)] transition hover:bg-[var(--panel)] hover:text-[var(--text)]"
+          className="btn btn-ghost h-8 flex-1 px-0 text-[12.5px] font-semibold"
         >
           <GlobeIcon width={15} height={15} />
           {lang}
         </button>
-        <button
-          onClick={onSettings}
-          title={t("settings.title")}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-2)] transition hover:bg-[var(--panel)] hover:text-[var(--text)]"
-        >
+        <button onClick={onSettings} title={t("settings.title")} className="icon-btn shrink-0">
           <SettingsIcon width={17} height={17} />
         </button>
       </div>

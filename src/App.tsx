@@ -4,11 +4,12 @@ import { useTaskStore, useTaskStats } from "./store/taskStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { useGrabStore } from "./store/grabStore";
 import { isTauri, formatSpeed } from "./api";
-import { PlusIcon, SearchIcon } from "./components/icons";
+import { PlusIcon, SearchIcon, CloudIcon } from "./components/icons";
 import Sidebar from "./components/Sidebar";
 import TaskList from "./components/TaskList";
 import NewDownloadDialog from "./components/NewDownloadDialog";
 import SettingsDialog from "./components/SettingsDialog";
+import UpdateDialog from "./components/UpdateDialog";
 import Toasts from "./components/Toasts";
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
 
   const [showNew, setShowNew] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUpdate, setShowUpdate] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -65,7 +67,7 @@ export default function App() {
       <Sidebar onNew={() => setShowNew(true)} onSettings={() => setShowSettings(true)} />
 
       <main className="relative flex flex-1 flex-col overflow-hidden">
-        <header className="flex shrink-0 items-center gap-4 border-b border-[var(--border-soft)] bg-[var(--bg-2)]/40 px-6 py-3.5">
+        <header className="flex shrink-0 items-center gap-4 border-b border-[var(--border-soft)] bg-[var(--bg-2)]/50 px-6 py-3">
           <div className="relative w-72">
             <SearchIcon
               width={15}
@@ -76,31 +78,34 @@ export default function App() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t("header.search")}
-              className="w-full rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] py-2 pl-9 pr-3 text-[13px] outline-none transition placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20"
+              className="input pl-9"
             />
           </div>
 
           <div className="flex-1" />
 
-          <div className="flex items-center gap-1.5 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3 py-1.5">
+          <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--text-2)]">
             <span
-              className={`h-2 w-2 rounded-full ${
-                connected ? "bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.8)]" : "bg-rose-400"
+              className={`h-1.5 w-1.5 rounded-full ${
+                connected ? "bg-emerald-400" : "bg-rose-400"
               }`}
             />
-            <span className="text-[12px] font-medium text-[var(--text-2)]">
-              {connected ? "Online" : "Offline"}
-            </span>
+            {connected ? "Online" : "Offline"}
           </div>
 
-          <div className="hidden items-center gap-1.5 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3 py-1.5 text-[12px] font-semibold tabular-nums text-[var(--accent)] md:flex">
+          <div className="hidden text-[12px] font-semibold tabular-nums text-[var(--text-2)] md:block">
             {formatSpeed(stats.activeSpeed)}
           </div>
 
           <button
-            onClick={() => setShowNew(true)}
-            className="app-gradient flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:brightness-110 active:scale-95"
+            onClick={() => setShowUpdate(true)}
+            title={t("update.title")}
+            className="icon-btn"
           >
+            <CloudIcon width={17} height={17} />
+          </button>
+
+          <button onClick={() => setShowNew(true)} className="btn btn-primary">
             <PlusIcon width={15} height={15} />
             {t("header.newDownload")}
           </button>
@@ -115,6 +120,7 @@ export default function App() {
         onClose={closeNew}
       />
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
+      <UpdateDialog open={showUpdate} onClose={() => setShowUpdate(false)} />
       <Toasts />
     </div>
   );

@@ -103,19 +103,18 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
     }
   };
 
-  const input =
-    "w-full rounded-xl border border-[var(--border)] bg-[var(--bg-2)] px-3.5 py-2.5 text-[13.5px] outline-none transition placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20";
+  const input = "input";
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => e.target === e.currentTarget && (isGrab ? handleReject() : onClose())}
     >
-      <div className="animate-pop w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-6 shadow-2xl">
+      <div className="animate-pop w-full max-w-lg rounded-lg border border-[var(--border)] bg-[var(--panel)] p-6 shadow-[var(--shadow)]">
         <div className="mb-5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="app-gradient flex h-9 w-9 items-center justify-center rounded-xl text-white shadow-lg shadow-indigo-500/30">
-              <ZapIcon width={18} height={18} />
+            <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
+              <ZapIcon width={17} height={17} />
             </div>
             <h2 className="text-[16px] font-bold">
               {isGrab ? t("dialog.grabTitle") : t("dialog.title")}
@@ -124,7 +123,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
           <button
             onClick={isGrab ? handleReject : onClose}
             disabled={busy}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted)] transition hover:bg-[var(--panel-2)] hover:text-[var(--text)] disabled:opacity-50"
+            className="icon-btn disabled:opacity-50"
           >
             <XIcon width={16} height={16} />
           </button>
@@ -188,7 +187,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
               <input value={saveDir} onChange={(e) => setSaveDir(e.target.value)} className={input} />
               <button
                 onClick={handleBrowse}
-                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-3.5 text-[13px] font-semibold text-[var(--text-2)] transition hover:border-[var(--accent)]/40 hover:text-[var(--accent)]"
+                className="btn btn-outline shrink-0"
               >
                 <FolderIcon width={15} height={15} />
                 {t("action.browse")}
@@ -218,14 +217,14 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
             <button
               onClick={isGrab ? handleReject : onClose}
               disabled={busy}
-              className="rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-5 py-2.5 text-[13.5px] font-semibold text-[var(--text-2)] transition hover:text-[var(--text)] disabled:opacity-50"
+              className="btn btn-outline disabled:opacity-50"
             >
               {isGrab ? t("action.cancel") : t("action.close")}
             </button>
             <button
               onClick={submit}
               disabled={busy}
-              className="app-gradient flex items-center gap-2 rounded-xl px-5 py-2.5 text-[13.5px] font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:brightness-110 active:scale-95 disabled:opacity-60"
+              className="btn btn-primary"
             >
               <ZapIcon width={15} height={15} />
               {busy ? "…" : isGrab ? t("action.download") : t("action.start")}

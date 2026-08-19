@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatBytes, formatEta, formatSpeed, fileIcon, openFolder } from "../api";
 import { useTaskStore } from "../store/taskStore";
@@ -16,6 +16,7 @@ import {
   AlertIcon,
   CheckIcon,
   ClockIcon,
+  FileGlyph,
 } from "./icons";
 
 const STATUS_STYLE: Record<string, { label: string; cls: string; icon: React.ReactNode }> = {
@@ -26,12 +27,12 @@ const STATUS_STYLE: Record<string, { label: string; cls: string; icon: React.Rea
   },
   Queued: {
     label: "status.Queued",
-    cls: "bg-slate-500/10 text-slate-400 border-slate-500/30",
+    cls: "bg-zinc-500/10 text-zinc-400 border-zinc-500/30",
     icon: <ClockIcon width={12} height={12} />,
   },
   Downloading: {
     label: "status.Downloading",
-    cls: "bg-indigo-500/10 text-indigo-400 border-indigo-500/30",
+    cls: "bg-sky-500/10 text-sky-400 border-sky-500/30",
     icon: <ClockIcon width={12} height={12} />,
   },
   Paused: {
@@ -51,7 +52,7 @@ const STATUS_STYLE: Record<string, { label: string; cls: string; icon: React.Rea
   },
   Canceled: {
     label: "status.Canceled",
-    cls: "bg-slate-500/10 text-slate-400 border-slate-500/30",
+    cls: "bg-zinc-500/10 text-zinc-400 border-zinc-500/30",
     icon: <XIcon width={12} height={12} />,
   },
 };
@@ -63,15 +64,16 @@ interface Props {
 export default function TaskItem({ task }: Props) {
   const { t } = useTranslation();
   const { pauseTask, resumeTask, cancelTask, removeTask } = useTaskStore();
+  const refreshedAt = useTaskStore((s) => s.refreshedAt);
   const toast = useToastStore((s) => s.push);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const icon = fileIcon(task.filename);
   const st = STATUS_STYLE[task.status] ?? STATUS_STYLE.Queued;
+  const live = useLiveProgress(task, refreshedAt);
   const progress =
-    task.total_size && task.total_size > 0 ? task.downloaded / task.total_size : null;
-  const remaining =
-    task.total_size && task.total_size > 0 ? task.total_size - task.downloaded : 0;
+    task.total_size && task.total_size > 0 ? live.downloaded / task.total_size : null;
+  const remaining = task.total_size ? Math.max(0, task.total_size - live.downloaded) : 0;
 
   const handlePause = async () => {
     const ok = await pauseTask(task.id);
@@ -101,19 +103,19 @@ export default function TaskItem({ task }: Props) {
   const active = task.status === "Downloading";
 
   return (
-    <div className="group animate-slide-in relative rounded-2xl border border-[var(--border-soft)] bg-[var(--panel)] p-4 transition hover:border-[var(--accent)]/40 hover:shadow-[var(--shadow)]">
+    <div className="group animate-slide-in rounded-lg border border-[var(--border)] bg-[var(--panel)] p-3.5 transition hover:border-[var(--text-2)]/40 hover:bg-[var(--panel-2)]/60">
       <div className="flex items-start gap-3.5">
         <div
-          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-lg ${icon.color}`}
+          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${icon.color}`}
         >
-          {icon.label}
+          <FileGlyph kind={icon.kind} width={20} height={20} />
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[14px] font-semibold">{task.filename}</span>
             <span
-              className={`flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${st.cls}`}
+              className={`flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium ${st.cls}`}
             >
               {st.icon}
               {t(st.label)}
@@ -128,17 +130,22 @@ export default function TaskItem({ task }: Props) {
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-[var(--text-2)]">
             <span className="tabular-nums">
-              {formatBytes(task.downloaded)}
+              {formatBytes(live.downloaded)}
               {task.total_size ? ` / ${formatBytes(task.total_size)}` : ""}
             </span>
+            {progress !== null && (
+              <span className="font-semibold tabular-nums text-[var(--text-2)]">
+                {(progress * 100).toFixed(1)}%
+              </span>
+            )}
             {active && (
               <span className="font-semibold tabular-nums text-[var(--accent)]">
-                {formatSpeed(task.speed)}
+                {formatSpeed(live.speed)}
               </span>
             )}
             {active && task.total_size && (
               <span className="tabular-nums">
-                {t("title.eta")} {formatEta(remaining, task.speed)}
+                {t("title.eta")} {formatEta(remaining, live.speed)}
               </span>
             )}
             {task.status !== "Completed" && (
@@ -189,6 +196,32 @@ export default function TaskItem({ task }: Props) {
   );
 }
 
+function useLiveProgress(task: DownloadTask, refreshedAt: number) {
+  const [now, setNow] = useState(() => Date.now());
+  const active = task.status === "Downloading" && task.speed > 0;
+
+  useEffect(() => {
+    if (!active) return;
+    let raf = 0;
+    const tick = () => {
+      setNow(Date.now());
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+
+  if (!active || !task.total_size) {
+    return { downloaded: task.downloaded, speed: task.speed };
+  }
+  const elapsed = (now - refreshedAt) / 1000;
+  if (elapsed <= 0 || elapsed > 2) {
+    return { downloaded: task.downloaded, speed: task.speed };
+  }
+  const est = task.downloaded + task.speed * elapsed;
+  return { downloaded: Math.min(task.total_size, est), speed: task.speed };
+}
+
 function IconBtn({
   children,
   onClick,
@@ -208,12 +241,8 @@ function IconBtn({
     <button
       title={title}
       onClick={onClick}
-      className={`flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--panel-2)] transition active:scale-95 ${
-        danger
-          ? "text-rose-400 hover:border-rose-500/40 hover:bg-rose-500/10"
-          : accent
-            ? "text-emerald-400 hover:border-emerald-500/40 hover:bg-emerald-500/10"
-            : "text-[var(--text-2)] hover:border-[var(--accent)]/40 hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+      className={`icon-btn ${
+        danger ? "icon-btn-danger" : accent ? "icon-btn-accent" : ""
       } ${pulse ? "animate-pulse" : ""}`}
     >
       {children}

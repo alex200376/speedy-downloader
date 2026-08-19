@@ -34,7 +34,7 @@ export default function SpeedChart({ speed }: { speed: number }) {
   const area = `${path} L${W},${H} L0,${H} Z`;
 
   return (
-    <div className="rounded-2xl border border-[var(--border-soft)] bg-[var(--panel)] p-4">
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
       <div className="mb-2 flex items-center justify-between">
         <div className="text-[13px] font-semibold text-[var(--text-2)]">{t("title.speed")}</div>
         <div className="flex items-baseline gap-1.5">
@@ -46,14 +46,20 @@ export default function SpeedChart({ speed }: { speed: number }) {
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="h-20 w-full" preserveAspectRatio="none">
         <defs>
           <linearGradient id="spd" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.02" />
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.01" />
           </linearGradient>
         </defs>
         {points.length > 1 && (
           <>
             <path d={area} fill="url(#spd)" />
-            <path d={path} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" />
+            <path
+              d={path}
+              fill="none"
+              stroke="var(--accent)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
           </>
         )}
         {points.length <= 1 && (

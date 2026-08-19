@@ -65,3 +65,15 @@ export interface HealthInfo {
   version: string;
   online: boolean;
 }
+
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  has_update: boolean;
+  title: string;
+  notes: string;
+  asset_name: string;
+  asset_url: string;
+  asset_size: number;
+  release_url: string;
+}

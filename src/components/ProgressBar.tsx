@@ -7,7 +7,11 @@ export default function ProgressBar({ value, status }: Props) {
   const downloading = status === "Downloading";
 
   if (value === null || value === undefined || status === "Pending") {
-    return <div className="bar-shimmer h-1.5 w-full overflow-hidden rounded-full" />;
+    return (
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--panel-2)]">
+        <div className="bar-indeterminate h-full w-1/3 rounded-full bg-[var(--accent)]" />
+      </div>
+    );
   }
 
   const pct = Math.min(1, Math.max(0, value));
@@ -18,21 +22,19 @@ export default function ProgressBar({ value, status }: Props) {
       ? "var(--amber)"
       : status === "Error"
         ? "var(--rose)"
-        : undefined;
+        : "var(--accent)";
 
   return (
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--panel-2)]">
       <div
-        className={`relative h-full rounded-full transition-[width] duration-300 ease-out ${
-          status === "Queued" ? "bar-queued" : ""
+        className={`h-full rounded-full transition-[width] duration-300 ease-out ${
+          status === "Queued" || downloading ? "opacity-70" : ""
         }`}
         style={{
           width: `${(pct * 100).toFixed(2)}%`,
-          background: color ?? "linear-gradient(90deg, var(--accent), var(--accent-2))",
+          background: color,
         }}
-      >
-        {downloading && !done && <div className="bar-striped absolute inset-0 rounded-full" />}
-      </div>
+      />
     </div>
   );
 }

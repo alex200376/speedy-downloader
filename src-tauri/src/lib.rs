@@ -46,6 +46,8 @@ pub fn run() {
             commands::get_native_info,
             commands::prepare_extension,
             commands::open_extensions_page,
+            commands::check_update,
+            commands::open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

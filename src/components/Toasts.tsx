@@ -16,7 +16,7 @@ export default function Toasts() {
         <div
           key={toast.id}
           onClick={() => remove(toast.id)}
-          className={`animate-pop pointer-events-auto cursor-pointer rounded-xl border px-4 py-3 text-[13px] font-medium shadow-lg backdrop-blur ${KIND_STYLE[toast.kind]}`}
+          className={`animate-pop pointer-events-auto cursor-pointer rounded-lg border px-4 py-3 text-[13px] font-medium shadow-[var(--shadow)] ${KIND_STYLE[toast.kind]}`}
         >
           {toast.message}
         </div>

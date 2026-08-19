@@ -7,6 +7,7 @@ interface TaskState {
   filter: FilterKey;
   search: string;
   connected: boolean;
+  refreshedAt: number;
   refresh: () => Promise<void>;
   startPolling: () => void;
   setFilter: (f: FilterKey) => void;
@@ -24,10 +25,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   filter: "all",
   search: "",
   connected: false,
+  refreshedAt: Date.now(),
 
   refresh: async () => {
     const [tasks, health] = await Promise.all([api.listTasks(), api.health()]);
-    set({ tasks, connected: health !== null });
+    set({ tasks, connected: health !== null, refreshedAt: Date.now() });
   },
 
   startPolling: () => {

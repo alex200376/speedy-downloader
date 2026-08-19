@@ -681,7 +681,7 @@ async fn segment_loop(
         buf.write_all(&chunk).await.map_err(err_string)?;
         seg.written += chunk.len() as u64;
         manager.throttle(chunk.len() as u64).await;
-        if last_update.elapsed() >= Duration::from_millis(200) {
+        if last_update.elapsed() >= Duration::from_millis(100) {
             buf.flush().await.map_err(err_string)?;
             manager.update_segment(id, seg.index, seg.written);
             last_update = Instant::now();
