@@ -11,6 +11,7 @@ npm-debug.log*
 
 # Release installer
 release/*.exe
+release/*.zip
 
 # OS / editor
 .DS_Store
