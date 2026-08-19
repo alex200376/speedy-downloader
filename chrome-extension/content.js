@@ -126,6 +126,41 @@
     true,
   );
 
+  let online = false;
+  function checkOnline() {
+    chrome.runtime.sendMessage({ type: "SD_HEALTH" }, (r) => {
+      online = !!(r && r.ok);
+    });
+  }
+  checkOnline();
+  setInterval(checkOnline, 5000);
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      const a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+      if (!a || !isDownloadable(a)) return;
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      if (!online) return;
+      e.preventDefault();
+      e.stopPropagation();
+      hideBtn();
+      chrome.runtime.sendMessage(
+        {
+          type: "SD_GRAB",
+          url: a.href,
+          filename: linkFilename(a) || undefined,
+          referer: location.href,
+        },
+        (r) => {
+          const ok = r && r.ok;
+          toast(ok ? text().sent : text().fail, ok);
+        },
+      );
+    },
+    true,
+  );
+
   document.addEventListener("scroll", hideBtn, true);
   document.addEventListener("mouseout", (e) => {
     if (e.target === document.documentElement) hideBtn();

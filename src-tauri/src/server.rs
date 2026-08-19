@@ -95,12 +95,11 @@ async fn create_task(
     Json(body): Json<CreateTaskBody>,
 ) -> Json<ApiResponse<DownloadTask>> {
     if body.confirm.unwrap_or(false) {
-        if let Err(e) =
-            crate::download::engine::analyze(&st.manager.client, &body.url, body.referer.as_deref())
-                .await
-        {
-            return Json(ApiResponse::err(e));
-        }
+        // Non-fatal: analyze is best-effort; if it fails we still create the task
+        // so the user can see the dialog and retry.  Previously this blocked the
+        // entire download when the probe request failed (e.g. local network URLs).
+        let _ = crate::download::engine::analyze(&st.manager.client, &body.url, body.referer.as_deref())
+            .await;
     }
     match st.manager.create_task(
         body.url,
