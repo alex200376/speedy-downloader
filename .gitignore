@@ -9,6 +9,9 @@ src-tauri/target/
 *.log
 npm-debug.log*
 
+# Release installer
+release/*.exe
+
 # OS / editor
 .DS_Store
 Thumbs.db
