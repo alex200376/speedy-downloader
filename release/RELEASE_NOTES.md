@@ -1,15 +1,12 @@
-# SpeedDownloader v1.0.0
+# SpeedDownloader v1.0.1
 
-First release.
-
-## Features
-- Multi-segment downloads (multi-threaded)
-- Resume support
-- Built-in Chrome extension for capturing downloads
-- Modern UI with internationalization (i18n)
+## What's new
+- System tray icon with menu (show main window / quit), close button hides to tray
+- Single-click tray icon restores the main window
+- Updated Tauri dependencies and build features
 
 ## Download
-The installer below is a NSIS setup for Windows x64. WebView2 must be installed (pre-installed on Windows 10/11).
+NSIS setup for Windows x64. WebView2 must be installed (pre-installed on Windows 10/11).
 
 ## Build from source
 ```
