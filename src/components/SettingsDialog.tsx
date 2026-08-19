@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { chooseFolder, openExtensionsPage, prepareExtension } from "../api";
+import { chooseFolder, EXTENSION_DOWNLOAD_URL, openExtensionsPage, openUrl, prepareExtension } from "../api";
 import { useSettingsStore } from "../store/settingsStore";
 import { useToastStore } from "../store/toastStore";
 import type { Settings } from "../types";
@@ -88,23 +88,19 @@ export default function SettingsDialog({ open, onClose }: Props) {
     toast("success", t("settings.extensionInstalled"));
   };
 
-  const field =
-    "w-full rounded-xl border border-[var(--border)] bg-[var(--bg-2)] px-3.5 py-2.5 text-[13.5px] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20";
+  const field = "input";
   const label = "mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]";
   const grid2 = "grid grid-cols-2 gap-3";
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="animate-pop w-full max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-6 shadow-2xl">
+      <div className="animate-pop w-full max-w-xl rounded-lg border border-[var(--border)] bg-[var(--panel)] p-6 shadow-[var(--shadow)]">
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-[16px] font-bold">{t("settings.title")}</h2>
-          <button
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted)] transition hover:bg-[var(--panel-2)] hover:text-[var(--text)]"
-          >
+          <button onClick={onClose} className="icon-btn">
             <XIcon width={16} height={16} />
           </button>
         </div>
@@ -116,7 +112,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
               <input value={draft.save_dir} onChange={(e) => set({ save_dir: e.target.value })} className={field} />
               <button
                 onClick={browseDir}
-                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-3.5 text-[13px] font-semibold text-[var(--text-2)] transition hover:border-[var(--accent)]/40 hover:text-[var(--accent)]"
+                className="btn btn-outline shrink-0"
               >
                 <FolderIcon width={15} height={15} />
                 {t("action.browse")}
@@ -195,9 +191,9 @@ export default function SettingsDialog({ open, onClose }: Props) {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-[var(--accent)]/25 bg-[var(--accent-soft)] p-4">
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)]/60 p-4">
             <div className="flex items-center gap-2">
-              <div className="app-gradient flex h-7 w-7 items-center justify-center rounded-lg text-white">
+              <div className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel)] text-[var(--text)]">
                 <DownloadIcon width={14} height={14} />
               </div>
               <div className="text-[13px] font-bold">{t("settings.extension")}</div>
@@ -206,7 +202,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
             <button
               onClick={installExtension}
               disabled={extBusy}
-              className="app-gradient mt-2.5 flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-semibold text-white transition hover:brightness-110 active:scale-95 disabled:opacity-60"
+              className="btn btn-primary mt-2.5"
             >
               <DownloadIcon width={13} height={13} />
               {extBusy ? "…" : t("settings.extensionInstall")}
@@ -228,14 +224,21 @@ export default function SettingsDialog({ open, onClose }: Props) {
             </div>
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
               <button
+                onClick={() => openUrl(EXTENSION_DOWNLOAD_URL)}
+                className="btn btn-outline px-2 text-[12px]"
+              >
+                <DownloadIcon width={13} height={13} />
+                {t("settings.extensionDownload")}
+              </button>
+              <button
                 onClick={() => openExtensionsPage("auto")}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-[var(--accent)] transition hover:bg-[var(--accent)]/10"
+                className="btn btn-ghost px-2 text-[12px]"
               >
                 {t("settings.openExtensionsPage")}
               </button>
               <button
                 onClick={copySteps}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-[var(--accent)] transition hover:bg-[var(--accent)]/10"
+                className="btn btn-ghost px-2 text-[12px]"
               >
                 {copied ? <CheckIcon width={13} height={13} /> : <CopyIcon width={13} height={13} />}
                 {copied ? t("action.copy") + " ✓" : t("action.copy")}
@@ -245,16 +248,10 @@ export default function SettingsDialog({ open, onClose }: Props) {
         </div>
 
         <div className="mt-5 flex justify-end gap-2.5">
-          <button
-            onClick={onClose}
-            className="rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-5 py-2.5 text-[13.5px] font-semibold text-[var(--text-2)] transition hover:text-[var(--text)]"
-          >
+          <button onClick={onClose} className="btn btn-outline">
             {t("action.close")}
           </button>
-          <button
-            onClick={saveAll}
-            className="app-gradient rounded-xl px-5 py-2.5 text-[13.5px] font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:brightness-110 active:scale-95"
-          >
+          <button onClick={saveAll} className="btn btn-primary">
             {t("action.save")}
           </button>
         </div>

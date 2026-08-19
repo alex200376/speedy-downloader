@@ -16,6 +16,20 @@ const resources = {
         newDownload: "New Download",
         search: "Search downloads…",
       },
+      update: {
+        title: "Check for updates",
+        checking: "Checking for updates…",
+        upToDate: "You're up to date",
+        downloadNow: "A new version is available",
+        currentVersion: "Current version",
+        latestVersion: "Latest version",
+        releaseNotes: "Release notes",
+        downloadUpdate: "Download update",
+        downloadStarted: "Update package download started",
+        openPage: "Open release page",
+        retry: "Retry",
+        failed: "Couldn't check for updates",
+      },
       action: {
         pause: "Pause",
         resume: "Resume",
@@ -72,8 +86,9 @@ const resources = {
         extensionDesc:
           "Install the extension to grab downloads directly from your browser.",
         extensionSteps:
-          "1. Open chrome://extensions · 2. Enable Developer mode · 3. Load unpacked → select the chrome-extension folder of this project",
+          "1. Download the extension zip · 2. Extract it · 3. Open chrome://extensions · 4. Enable Developer mode · 5. Load unpacked → select the extracted folder",
         extensionInstall: "Install extension",
+        extensionDownload: "Download from GitHub",
         extensionInstalled:
           "Extension folder is ready and copied to clipboard. Click “Load unpacked” in the browser page and paste.",
         extensionFail: "Failed to prepare extension",
@@ -122,6 +137,20 @@ const resources = {
       header: {
         newDownload: "新建下载",
         search: "搜索下载任务…",
+      },
+      update: {
+        title: "检查更新",
+        checking: "正在检查更新…",
+        upToDate: "已是最新版本",
+        downloadNow: "发现新版本",
+        currentVersion: "当前版本",
+        latestVersion: "最新版本",
+        releaseNotes: "更新内容",
+        downloadUpdate: "下载更新",
+        downloadStarted: "更新包已开始下载",
+        openPage: "打开发布页",
+        retry: "重试",
+        failed: "检查更新失败",
       },
       action: {
         pause: "暂停",
@@ -178,8 +207,9 @@ const resources = {
         extension: "Chrome 扩展",
         extensionDesc: "安装扩展后，可直接在浏览器中一键抓取下载。",
         extensionSteps:
-          "1. 打开 chrome://extensions · 2. 开启开发者模式 · 3. 加载已解压的扩展程序 → 选择本项目的 chrome-extension 文件夹",
+          "1. 下载扩展 zip · 2. 解压 · 3. 打开 chrome://extensions · 4. 开启开发者模式 · 5. 加载已解压的扩展程序 → 选择解压后的文件夹",
         extensionInstall: "一键安装扩展",
+        extensionDownload: "从 GitHub 下载",
         extensionInstalled:
           "扩展已就绪，路径已复制到剪贴板。在浏览器扩展页点击「加载已解压的扩展程序」并粘贴即可。",
         extensionFail: "扩展安装失败",

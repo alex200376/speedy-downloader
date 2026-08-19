@@ -8,6 +8,9 @@ import type {
 const STORAGE_KEY = "sd_api_base";
 const DEFAULT_BASE = "http://127.0.0.1:47812";
 
+export const EXTENSION_DOWNLOAD_URL =
+  "https://github.com/alex200376/speedy-downloader/releases/latest/download/SpeedDownloader-extension.zip";
+
 function baseUrl(): string {
   return localStorage.getItem(STORAGE_KEY) || DEFAULT_BASE;
 }
@@ -196,6 +199,27 @@ export async function openExtensionsPage(
   }
 }
 
+export async function checkUpdate(): Promise<import("./types").UpdateInfo | null> {
+  if (!isTauri()) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<import("./types").UpdateInfo>("check_update");
+  } catch {
+    return null;
+  }
+}
+
+export async function openUrl(url: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_url", { url });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "—";
   if (n < 1024) return `${n} B`;
@@ -224,41 +248,42 @@ export function formatEta(remaining: number, speed: number): string {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
-export function fileIcon(name: string): { label: string; color: string } {
+export function fileIcon(name: string): { kind: string; color: string } {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, [string, string]> = {
-    zip: ["📦", "text-amber-400 bg-amber-500/10"],
-    rar: ["🗜️", "text-amber-400 bg-amber-500/10"],
-    "7z": ["🗜️", "text-amber-400 bg-amber-500/10"],
-    tar: ["🗜️", "text-amber-400 bg-amber-500/10"],
-    gz: ["🗜️", "text-amber-400 bg-amber-500/10"],
-    exe: ["🖥️", "text-sky-400 bg-sky-500/10"],
-    msi: ["🖥️", "text-sky-400 bg-sky-500/10"],
-    apk: ["📱", "text-emerald-400 bg-emerald-500/10"],
-    iso: ["💿", "text-purple-400 bg-purple-500/10"],
-    img: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    png: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    jpg: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    jpeg: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    gif: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    webp: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    svg: ["🖼️", "text-pink-400 bg-pink-500/10"],
-    mp4: ["🎬", "text-violet-400 bg-violet-500/10"],
-    mkv: ["🎬", "text-violet-400 bg-violet-500/10"],
-    avi: ["🎬", "text-violet-400 bg-violet-500/10"],
-    mov: ["🎬", "text-violet-400 bg-violet-500/10"],
-    mp3: ["🎵", "text-rose-400 bg-rose-500/10"],
-    flac: ["🎵", "text-rose-400 bg-rose-500/10"],
-    wav: ["🎵", "text-rose-400 bg-rose-500/10"],
-    pdf: ["📄", "text-red-400 bg-red-500/10"],
-    doc: ["📄", "text-blue-400 bg-blue-500/10"],
-    docx: ["📄", "text-blue-400 bg-blue-500/10"],
-    xls: ["📊", "text-green-400 bg-green-500/10"],
-    xlsx: ["📊", "text-green-400 bg-green-500/10"],
-    ppt: ["📊", "text-orange-400 bg-orange-500/10"],
-    txt: ["📃", "text-slate-400 bg-slate-500/10"],
-    md: ["📃", "text-slate-400 bg-slate-500/10"],
+    zip: ["package", "text-amber-400 bg-amber-500/10"],
+    rar: ["package", "text-amber-400 bg-amber-500/10"],
+    "7z": ["package", "text-amber-400 bg-amber-500/10"],
+    tar: ["package", "text-amber-400 bg-amber-500/10"],
+    gz: ["package", "text-amber-400 bg-amber-500/10"],
+    exe: ["app", "text-sky-400 bg-sky-500/10"],
+    msi: ["app", "text-sky-400 bg-sky-500/10"],
+    apk: ["apk", "text-emerald-400 bg-emerald-500/10"],
+    iso: ["package", "text-violet-400 bg-violet-500/10"],
+    img: ["image", "text-pink-400 bg-pink-500/10"],
+    png: ["image", "text-pink-400 bg-pink-500/10"],
+    jpg: ["image", "text-pink-400 bg-pink-500/10"],
+    jpeg: ["image", "text-pink-400 bg-pink-500/10"],
+    gif: ["image", "text-pink-400 bg-pink-500/10"],
+    webp: ["image", "text-pink-400 bg-pink-500/10"],
+    svg: ["image", "text-pink-400 bg-pink-500/10"],
+    mp4: ["video", "text-violet-400 bg-violet-500/10"],
+    mkv: ["video", "text-violet-400 bg-violet-500/10"],
+    avi: ["video", "text-violet-400 bg-violet-500/10"],
+    mov: ["video", "text-violet-400 bg-violet-500/10"],
+    mp3: ["music", "text-pink-400 bg-pink-500/10"],
+    flac: ["music", "text-pink-400 bg-pink-500/10"],
+    wav: ["music", "text-pink-400 bg-pink-500/10"],
+    pdf: ["fileText", "text-red-400 bg-red-500/10"],
+    doc: ["fileText", "text-blue-400 bg-blue-500/10"],
+    docx: ["fileText", "text-blue-400 bg-blue-500/10"],
+    xls: ["sheet", "text-emerald-400 bg-emerald-500/10"],
+    xlsx: ["sheet", "text-emerald-400 bg-emerald-500/10"],
+    ppt: ["sheet", "text-orange-400 bg-orange-500/10"],
+    pptx: ["sheet", "text-orange-400 bg-orange-500/10"],
+    txt: ["fileText", "text-slate-400 bg-slate-500/10"],
+    md: ["fileText", "text-slate-400 bg-slate-500/10"],
   };
-  const [label, color] = map[ext] ?? ["📄", "text-slate-400 bg-slate-500/10"];
-  return { label, color };
+  const [kind, color] = map[ext] ?? ["file", "text-slate-400 bg-slate-500/10"];
+  return { kind, color };
 }
