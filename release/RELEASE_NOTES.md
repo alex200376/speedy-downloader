@@ -1,13 +1,11 @@
-# SpeedDownloader v1.0.2
+# SpeedDownloader v1.0.3
 
 ## What's new
-- In-app update checker with download dialog (checks GitHub releases)
-- Smoother progress updates (refresh every 100 ms)
-- UI polish across components, icons and styles
-- Chrome extension available as a zip download
+- Accent color picker in settings (zinc, orange, amber, emerald, sky, violet, rose)
+- Accent theme persisted in app settings and applied across the UI
 
 ## Downloads
-- **Installer**: `SpeedDownloader_1.0.2_x64-setup.exe` (Windows x64, NSIS)
+- **Installer**: `SpeedDownloader_1.0.3_x64-setup.exe` (Windows x64, NSIS)
 - **Chrome extension**: `SpeedDownloader-extension.zip` (extract, then Load unpacked in chrome://extensions)
 
 WebView2 must be installed (pre-installed on Windows 10/11).
