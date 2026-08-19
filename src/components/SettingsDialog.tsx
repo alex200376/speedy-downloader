@@ -6,6 +6,16 @@ import { useToastStore } from "../store/toastStore";
 import type { Settings } from "../types";
 import { XIcon, FolderIcon, CopyIcon, CheckIcon, DownloadIcon } from "./icons";
 
+const ACCENTS: { key: string; color: string }[] = [
+  { key: "zinc", color: "#d4d4d8" },
+  { key: "orange", color: "#fb923c" },
+  { key: "amber", color: "#fbbf24" },
+  { key: "emerald", color: "#34d399" },
+  { key: "sky", color: "#38bdf8" },
+  { key: "violet", color: "#a78bfa" },
+  { key: "rose", color: "#fb7185" },
+];
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -17,7 +27,6 @@ export default function SettingsDialog({ open, onClose }: Props) {
   const toast = useToastStore((s) => s.push);
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState<Settings | null>(null);
-  const [extBusy, setExtBusy] = useState(false);
   const [extPath, setExtPath] = useState("");
   const [browsers, setBrowsers] = useState<{ chrome: boolean; edge: boolean } | null>(null);
 
@@ -27,7 +36,6 @@ export default function SettingsDialog({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    setExtBusy(true);
     prepareExtension()
       .then((info) => {
         if (info) {
@@ -35,7 +43,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
           setBrowsers({ chrome: info.chrome, edge: info.edge });
         }
       })
-      .finally(() => setExtBusy(false));
+      .catch(() => {});
   }, [open]);
 
   if (!open || !settings || !draft) return null;
@@ -63,29 +71,6 @@ export default function SettingsDialog({ open, onClose }: Props) {
     } catch {
       /* noop */
     }
-  };
-
-  const installExtension = async () => {
-    setExtBusy(true);
-    const info = await prepareExtension();
-    setExtBusy(false);
-    if (!info) {
-      toast("error", t("settings.extensionFail"));
-      return;
-    }
-    setExtPath(info.path);
-    setBrowsers({ chrome: info.chrome, edge: info.edge });
-    try {
-      await navigator.clipboard.writeText(info.path);
-    } catch {
-      /* noop */
-    }
-    const opened = await openExtensionsPage("auto");
-    if (!opened) {
-      toast("error", t("settings.extensionOpenFail"));
-      return;
-    }
-    toast("success", t("settings.extensionInstalled"));
   };
 
   const field = "input";
@@ -191,6 +176,25 @@ export default function SettingsDialog({ open, onClose }: Props) {
             </div>
           </div>
 
+          <div>
+            <label className={label}>{t("settings.accent")}</label>
+            <div className="flex flex-wrap items-center gap-2.5">
+              {ACCENTS.map((a) => (
+                <button
+                  key={a.key}
+                  onClick={() => set({ accent: a.key })}
+                  title={a.key}
+                  className={`h-7 w-7 rounded-full border-2 transition hover:scale-110 ${
+                    draft.accent === a.key
+                      ? "border-[var(--text)]"
+                      : "border-[var(--border)]"
+                  }`}
+                  style={{ background: a.color }}
+                />
+              ))}
+            </div>
+          </div>
+
           <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)]/60 p-4">
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel)] text-[var(--text)]">
@@ -199,14 +203,6 @@ export default function SettingsDialog({ open, onClose }: Props) {
               <div className="text-[13px] font-bold">{t("settings.extension")}</div>
             </div>
             <p className="mt-1.5 text-[12px] text-[var(--text-2)]">{t("settings.extensionDesc")}</p>
-            <button
-              onClick={installExtension}
-              disabled={extBusy}
-              className="btn btn-primary mt-2.5"
-            >
-              <DownloadIcon width={13} height={13} />
-              {extBusy ? "…" : t("settings.extensionInstall")}
-            </button>
             <div className="mt-2.5 space-y-1.5 text-[11.5px] text-[var(--text-2)]">
               {browsers && (
                 <div>

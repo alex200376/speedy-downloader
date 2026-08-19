@@ -9,7 +9,13 @@ pub struct Settings {
     pub speed_limit_kbps: u64,
     pub language: String,
     pub theme: String,
+    #[serde(default = "default_accent")]
+    pub accent: String,
     pub api_port: u16,
+}
+
+fn default_accent() -> String {
+    "zinc".to_string()
 }
 
 impl Default for Settings {
@@ -25,6 +31,7 @@ impl Default for Settings {
             speed_limit_kbps: 0,
             language: "zh".to_string(),
             theme: "dark".to_string(),
+            accent: default_accent(),
             api_port: 47812,
         }
     }

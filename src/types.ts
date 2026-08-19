@@ -49,6 +49,7 @@ export interface Settings {
   speed_limit_kbps: number;
   language: string;
   theme: string;
+  accent: string;
   api_port: number;
 }
 

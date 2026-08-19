@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatBytes, formatEta, formatSpeed, fileIcon, openFolder } from "../api";
 import { useTaskStore } from "../store/taskStore";
@@ -198,28 +198,27 @@ export default function TaskItem({ task }: Props) {
 
 function useLiveProgress(task: DownloadTask, refreshedAt: number) {
   const [now, setNow] = useState(() => Date.now());
+  const last = useRef(-1);
   const active = task.status === "Downloading" && task.speed > 0;
 
   useEffect(() => {
     if (!active) return;
-    let raf = 0;
-    const tick = () => {
-      setNow(Date.now());
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, [active]);
 
-  if (!active || !task.total_size) {
-    return { downloaded: task.downloaded, speed: task.speed };
+  const base = task.total_size ? Math.min(task.total_size, task.downloaded) : task.downloaded;
+  let value = base;
+  if (active && task.total_size) {
+    const elapsed = (now - refreshedAt) / 1000;
+    if (elapsed > 0 && elapsed <= 2) {
+      value = Math.min(task.total_size, base + task.speed * elapsed);
+    }
   }
-  const elapsed = (now - refreshedAt) / 1000;
-  if (elapsed <= 0 || elapsed > 2) {
-    return { downloaded: task.downloaded, speed: task.speed };
-  }
-  const est = task.downloaded + task.speed * elapsed;
-  return { downloaded: Math.min(task.total_size, est), speed: task.speed };
+  if (last.current > 0) value = Math.max(value, last.current);
+  value = Math.min(task.total_size ?? value, value);
+  last.current = value;
+  return { downloaded: value, speed: task.speed };
 }
 
 function IconBtn({

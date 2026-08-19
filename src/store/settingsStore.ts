@@ -32,6 +32,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const resolved = theme === "system" ? (prefersDark ? "dark" : "light") : theme;
     document.documentElement.dataset.theme = resolved;
+    document.documentElement.dataset.accent = s.accent || "zinc";
     setAppLanguage(s.language);
   },
 

@@ -246,6 +246,11 @@ async fn update_settings(
         } else {
             body.theme
         },
+        accent: if body.accent.is_empty() {
+            old.accent
+        } else {
+            body.accent
+        },
         api_port: body.api_port,
     };
     let new = s.clone();
