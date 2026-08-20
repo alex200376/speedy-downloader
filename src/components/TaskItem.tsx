@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { formatBytes, formatEta, formatSpeed, fileIcon, openFolder } from "../api";
+import { formatBytes, formatEta, formatSpeed, fileIcon, openFolder, verifyHash } from "../api";
 import { useTaskStore } from "../store/taskStore";
 import { useToastStore } from "../store/toastStore";
 import type { DownloadTask } from "../types";
@@ -16,6 +16,7 @@ import {
   AlertIcon,
   CheckIcon,
   ClockIcon,
+  ShieldIcon,
   FileGlyph,
 } from "./icons";
 
@@ -98,6 +99,20 @@ export default function TaskItem({ task }: Props) {
   };
   const handleOpen = async () => {
     if (!(await openFolder(task.file_path))) toast("error", t("toast.error"));
+  };
+  const handleVerify = async () => {
+    const r = await verifyHash(task.id);
+    if (!r) {
+      toast("error", t("toast.error"));
+      return;
+    }
+    if (r.matched === null) {
+      toast("info", `${t("task.hash")}: ${r.sha256.slice(0, 16)}…`);
+    } else if (r.matched) {
+      toast("success", `${t("task.hashMatched")}: ${r.sha256.slice(0, 16)}…`);
+    } else {
+      toast("error", `${t("task.hashMismatch")}: ${r.sha256.slice(0, 16)}…`);
+    }
   };
 
   const active = task.status === "Downloading";
@@ -182,6 +197,11 @@ export default function TaskItem({ task }: Props) {
           <IconBtn title={t("action.openFolder")} onClick={handleOpen}>
             <FolderIcon width={15} height={15} />
           </IconBtn>
+          {task.status === "Completed" && (
+            <IconBtn title={t("action.verify")} onClick={handleVerify}>
+              <ShieldIcon width={15} height={15} />
+            </IconBtn>
+          )}
           <IconBtn
             title={t("action.remove")}
             onClick={handleRemove}

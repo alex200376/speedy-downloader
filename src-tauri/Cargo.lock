@@ -3690,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "speedy-downloader"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "axum",
  "chrono",

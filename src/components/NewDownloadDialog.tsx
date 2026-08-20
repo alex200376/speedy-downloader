@@ -226,6 +226,19 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
             />
           </div>
 
+          <div>
+            <label className="mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]">
+              {t("dialog.customHeaders")}
+            </label>
+            <textarea
+              value={headersText}
+              onChange={(e) => setHeadersText(e.target.value)}
+              placeholder={"Cookie: …\nUser-Agent: …\nAuthorization: Bearer …"}
+              rows={2}
+              className={`${input} resize-none font-mono text-[12.5px]`}
+            />
+          </div>
+
           {error && (
             <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-[12.5px] text-rose-400">
               {error}
