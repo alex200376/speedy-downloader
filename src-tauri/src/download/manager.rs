@@ -13,7 +13,7 @@ pub struct DownloadManager {
     pub tasks: Mutex<HashMap<String, DownloadTask>>,
     running: Mutex<HashMap<String, CancellationToken>>,
     pub semaphore: Mutex<Arc<tokio::sync::Semaphore>>,
-    pub client: reqwest::Client,
+    client: Mutex<Arc<reqwest::Client>>,
     pub data_dir: PathBuf,
     pub settings: Arc<parking_lot::RwLock<Settings>>,
     app: Mutex<Option<tauri::AppHandle>>,
@@ -48,19 +48,14 @@ struct ProgressStats {
 impl DownloadManager {
     pub fn new(data_dir: PathBuf, settings: Arc<parking_lot::RwLock<Settings>>) -> Arc<Self> {
         let max_concurrent = settings.read().max_concurrent.max(1);
-        let client = reqwest::Client::builder()
-            .user_agent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            )
-            .connect_timeout(Duration::from_secs(15))
-            .build()
-            .expect("failed to build http client");
+        let proxy = settings.read().proxy.clone();
+        let client = Arc::new(build_client(&proxy));
 
         let manager = Arc::new(Self {
             tasks: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             semaphore: Mutex::new(Arc::new(tokio::sync::Semaphore::new(max_concurrent))),
-            client,
+            client: Mutex::new(client),
             data_dir,
             settings,
             app: Mutex::new(None),
@@ -77,6 +72,15 @@ impl DownloadManager {
 
     pub fn set_app(&self, app: tauri::AppHandle) {
         *self.app.lock() = Some(app);
+    }
+
+    pub fn client(&self) -> Arc<reqwest::Client> {
+        self.client.lock().clone()
+    }
+
+    pub fn rebuild_client(&self) {
+        let proxy = self.settings.read().proxy.clone();
+        *self.client.lock() = Arc::new(build_client(&proxy));
     }
 
     pub fn semaphore(&self) -> Arc<tokio::sync::Semaphore> {
