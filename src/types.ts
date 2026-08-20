@@ -34,6 +34,7 @@ export interface DownloadTask {
   status: TaskStatus;
   speed: number;
   referer: string | null;
+  headers: Record<string, string>;
   created_at: number;
   finished_at: number | null;
   error: string | null;
@@ -50,7 +51,19 @@ export interface Settings {
   language: string;
   theme: string;
   accent: string;
+  duplicate_policy: string;
+  sort_by_type: boolean;
+  notify_complete: boolean;
+  open_folder_on_complete: boolean;
   api_port: number;
+}
+
+export type DuplicatePolicy = "rename" | "overwrite" | "skip";
+
+export interface VerifyHashResult {
+  sha256: string;
+  matched: boolean | null;
+  filename: string;
 }
 
 export type FilterKey = "all" | "downloading" | "completed" | "paused" | "error";

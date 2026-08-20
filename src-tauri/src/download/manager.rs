@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
 pub struct DownloadManager {
@@ -15,6 +16,7 @@ pub struct DownloadManager {
     pub client: reqwest::Client,
     pub data_dir: PathBuf,
     pub settings: Arc<parking_lot::RwLock<Settings>>,
+    app: Mutex<Option<tauri::AppHandle>>,
     limiter: tokio::sync::Mutex<Limiter>,
     progress_stats: Mutex<ProgressStats>,
     last_persist: Mutex<Instant>,
@@ -61,6 +63,7 @@ impl DownloadManager {
             client,
             data_dir,
             settings,
+            app: Mutex::new(None),
             limiter: tokio::sync::Mutex::new(Limiter::new()),
             progress_stats: Mutex::default(),
             last_persist: Mutex::new(Instant::now()),
@@ -70,6 +73,10 @@ impl DownloadManager {
 
         manager.load_persisted();
         manager
+    }
+
+    pub fn set_app(&self, app: tauri::AppHandle) {
+        *self.app.lock() = Some(app);
     }
 
     pub fn semaphore(&self) -> Arc<tokio::sync::Semaphore> {
@@ -93,14 +100,26 @@ impl DownloadManager {
         if let Ok(s) = std::fs::read_to_string(path) {
             if let Ok(tasks) = serde_json::from_str::<Vec<DownloadTask>>(&s) {
                 let mut map = self.tasks.lock();
+                let mut changed = false;
                 for mut t in tasks {
-                    if t.status == TaskStatus::Pending {
+                    // Skip terminal states — don't carry old Completed/Canceled tasks across restarts
+                    if t.status == TaskStatus::Pending
+                        || t.status == TaskStatus::Completed
+                        || t.status == TaskStatus::Canceled
+                    {
+                        changed = true;
                         continue;
                     }
                     if t.status == TaskStatus::Downloading || t.status == TaskStatus::Queued {
                         t.status = TaskStatus::Paused;
+                        changed = true;
                     }
                     map.insert(t.id.clone(), t);
+                }
+                drop(map);
+                // Re-persist to flush stale entries from tasks.json
+                if changed {
+                    self.persist();
                 }
             }
         }
@@ -129,13 +148,14 @@ impl DownloadManager {
         save_dir: Option<String>,
         segments: Option<usize>,
         referer: Option<String>,
+        headers: Option<HashMap<String, String>>,
         confirm: bool,
     ) -> Result<DownloadTask, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("URL 必须是 http(s) 地址".into());
         }
         let settings = self.settings.read().clone();
-        let save_dir = save_dir.unwrap_or(settings.save_dir);
+        let mut save_dir = save_dir.unwrap_or(settings.save_dir.clone());
         let segments = segments.unwrap_or(settings.default_segments).clamp(1, 32);
 
         let user_provided = filename.is_some();
@@ -146,6 +166,14 @@ impl DownloadManager {
         } else {
             filename
         };
+        if settings.sort_by_type {
+            if let Some(sub) = category_for(&filename) {
+                save_dir = Path::new(&save_dir)
+                    .join(sub)
+                    .to_string_lossy()
+                    .to_string();
+            }
+        }
         let file_path = Path::new(&save_dir).join(&filename);
 
         let id = self.next_id();
@@ -161,6 +189,7 @@ impl DownloadManager {
             status: if confirm { TaskStatus::Pending } else { TaskStatus::Queued },
             speed: 0.0,
             referer: referer.clone(),
+            headers: headers.unwrap_or_default(),
             created_at: now_ms(),
             finished_at: None,
             error: None,
@@ -188,6 +217,7 @@ impl DownloadManager {
         filename: Option<String>,
         save_dir: Option<String>,
         segments: Option<usize>,
+        headers: Option<HashMap<String, String>>,
     ) -> Result<DownloadTask, String> {
         let mut tasks = self.tasks.lock();
         let task = tasks.get_mut(id).ok_or_else(|| "任务不存在".to_string())?;
@@ -205,6 +235,11 @@ impl DownloadManager {
                 }
             }
         }
+        if let Some(h) = headers {
+            if !h.is_empty() {
+                task.headers = h;
+            }
+        }
         if let Some(d) = save_dir {
             if !d.trim().is_empty() {
                 task.save_dir = d;
@@ -214,6 +249,14 @@ impl DownloadManager {
             task.segments = s.clamp(1, 32);
         } else if task.segments == 0 {
             task.segments = settings.default_segments.clamp(1, 32);
+        }
+        if settings.sort_by_type {
+            if let Some(sub) = category_for(&task.filename) {
+                let base = Path::new(&task.save_dir);
+                if base.file_name().map(|f| f != sub).unwrap_or(true) {
+                    task.save_dir = base.join(sub).to_string_lossy().to_string();
+                }
+            }
         }
         task.file_path = Path::new(&task.save_dir)
             .join(&task.filename)
@@ -422,14 +465,46 @@ impl DownloadManager {
 
     pub fn set_status(&self, id: &str, status: TaskStatus, error: Option<String>) {
         let mut tasks = self.tasks.lock();
+        let mut finished = None;
         if let Some(task) = tasks.get_mut(id) {
-            task.status = status;
+            task.status = status.clone();
             task.error = error;
             if status == TaskStatus::Completed || status == TaskStatus::Error {
                 task.speed = 0.0;
                 task.finished_at = Some(now_ms());
             }
+            if status == TaskStatus::Completed {
+                finished = Some(task.clone());
+            }
         }
+        drop(tasks);
+        self.persist();
+        if let Some(t) = finished {
+            self.on_completed(&t);
+        }
+    }
+
+    fn on_completed(&self, task: &DownloadTask) {
+        let settings = self.settings.read().clone();
+        if settings.notify_complete {
+            let filename = task.filename.clone();
+            crate::notify::toast("SpeedDownloader", &format!("「{}」下载完成", filename));
+            if let Some(app) = self.app.lock().clone() {
+                let _ = app.emit("task-completed", task.clone());
+            }
+        }
+        if settings.open_folder_on_complete {
+            if let Some(dir) = Path::new(&task.file_path).parent() {
+                let _ = crate::commands::open_folder(dir.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    pub fn cleanup_finished(&self) {
+        let mut tasks = self.tasks.lock();
+        tasks.retain(|_, t| {
+            t.status != TaskStatus::Completed && t.status != TaskStatus::Canceled
+        });
         drop(tasks);
         self.persist();
     }
@@ -693,9 +768,140 @@ pub fn build_segments(total: Option<u64>, count: usize, supports_ranges: bool) -
     segs
 }
 
+pub fn category_for(name: &str) -> Option<&'static str> {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let ext = match base.rfind('.') {
+        Some(dot) if dot > 0 && dot + 1 < base.len() => base[dot + 1..].to_ascii_lowercase(),
+        _ => return None,
+    };
+    let videos = ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts", "m4v", "3gp", "rmvb"];
+    let audio = ["mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma", "ape"];
+    let docs = [
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "epub",
+        "csv", "json", "xml", "html", "htm", "css", "js", "ts", "odt", "ods", "odp",
+    ];
+    let images = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif", "tiff", "heic", "psd"];
+    let archives = ["zip", "7z", "rar", "tar", "gz", "bz2", "xz", "tgz", "iso", "dmg", "jar"];
+    let programs = ["exe", "msi", "apk", "bat", "cmd", "ps1", "sh", "deb", "rpm", "appimage", "dll", "sys"];
+    if videos.contains(&ext.as_str()) {
+        Some("Videos")
+    } else if audio.contains(&ext.as_str()) {
+        Some("Audio")
+    } else if docs.contains(&ext.as_str()) {
+        Some("Documents")
+    } else if images.contains(&ext.as_str()) {
+        Some("Images")
+    } else if archives.contains(&ext.as_str()) {
+        Some("Archives")
+    } else if programs.contains(&ext.as_str()) {
+        Some("Programs")
+    } else {
+        None
+    }
+}
+
+pub fn unique_path(p: &Path) -> Option<PathBuf> {
+    if !p.exists() {
+        return Some(p.to_path_buf());
+    }
+    let parent = p.parent()?;
+    let stem = p.file_stem()?.to_string_lossy().to_string();
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for i in 1..=9999 {
+        let cand = parent.join(format!("{stem} ({i}){ext}"));
+        if !cand.exists() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+pub fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut r = std::io::BufReader::new(f);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = r.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 计算文件 SHA-256。若存在 `<文件名>.sha256` 伴生文件,返回 (hash, Some(是否匹配));否则 (hash, None)。
+pub fn verify_hash_file(path: &Path) -> Result<(String, Option<bool>), String> {
+    let actual = sha256_file(path)?;
+    let sidecar = PathBuf::from(format!("{}.sha256", path.display()));
+    if !sidecar.exists() {
+        return Ok((actual, None));
+    }
+    let content = std::fs::read_to_string(&sidecar).map_err(|e| e.to_string())?;
+    let mut expected = None;
+    for tok in content.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '=' || c == '*') {
+        let t = tok.trim().trim_matches('"');
+        if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+            expected = Some(t.to_lowercase());
+            break;
+        }
+    }
+    Ok((actual.clone(), Some(expected == Some(actual))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn category_cases() {
+        assert_eq!(category_for("movie.mp4"), Some("Videos"));
+        assert_eq!(category_for("song.flac"), Some("Audio"));
+        assert_eq!(category_for("report.pdf"), Some("Documents"));
+        assert_eq!(category_for("photo.jpg"), Some("Images"));
+        assert_eq!(category_for("backup.zip"), Some("Archives"));
+        assert_eq!(category_for("setup.exe"), Some("Programs"));
+        assert_eq!(category_for("readme"), None);
+        assert_eq!(category_for("notes.txt"), Some("Documents"));
+    }
+
+    #[test]
+    fn unique_path_cases() {
+        let dir = std::env::temp_dir().join("sd_unique_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("a.zip");
+        let _ = std::fs::write(&p, b"x");
+        let u = unique_path(&p).unwrap();
+        assert!(u != p);
+        assert_eq!(u.file_name().unwrap().to_string_lossy(), "a (1).zip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_hash_sidecar() {
+        let dir = std::env::temp_dir().join("sd_hash_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("f.bin");
+        std::fs::write(&p, b"hello").unwrap();
+        let hash = sha256_file(&p).unwrap();
+        assert_eq!(hash.len(), 64);
+        let (h, m) = verify_hash_file(&p).unwrap();
+        assert_eq!(h, hash);
+        assert_eq!(m, None);
+        std::fs::write(format!("{}.sha256", p.display()), format!("{}  f.bin", hash)).unwrap();
+        let (_, m) = verify_hash_file(&p).unwrap();
+        assert_eq!(m, Some(true));
+        std::fs::write(format!("{}.sha256", p.display()), "deadbeef  f.bin").unwrap();
+        let (_, m) = verify_hash_file(&p).unwrap();
+        assert_eq!(m, Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn has_ext_cases() {

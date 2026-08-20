@@ -128,6 +128,24 @@ fn accept_ranges(resp: &Response) -> bool {
         .unwrap_or(false)
 }
 
+fn apply_headers(
+    req: reqwest::RequestBuilder,
+    headers: &HashMap<String, String>,
+) -> reqwest::RequestBuilder {
+    let mut r = req;
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case("range") || k.eq_ignore_ascii_case("host") {
+            continue;
+        }
+        if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(v) {
+                r = r.header(name, value);
+            }
+        }
+    }
+    r
+}
+
 fn content_range_total(resp: &Response) -> Option<u64> {
     let h = resp.headers().get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
     let total = h.rsplit('/').next()?.trim();
@@ -167,8 +185,12 @@ pub(crate) async fn analyze(
     client: &reqwest::Client,
     url: &str,
     referer: Option<&str>,
+    headers: Option<&HashMap<String, String>>,
 ) -> Result<(Option<u64>, bool, Option<String>, Option<String>), String> {
     let mut head = client.head(url);
+    if let Some(h) = headers {
+        head = apply_headers(head, h);
+    }
     if let Some(r) = referer {
         head = head.header(REFERER, r);
     }
@@ -190,6 +212,9 @@ pub(crate) async fn analyze(
     }
 
     let mut get = client.get(url).header(RANGE, "bytes=0-0");
+    if let Some(h) = headers {
+        get = apply_headers(get, h);
+    }
     if let Some(r) = referer {
         get = get.header(REFERER, r);
     }
@@ -218,6 +243,7 @@ async fn detect_extension(
     client: &reqwest::Client,
     url: &str,
     referer: Option<&str>,
+    headers: Option<&HashMap<String, String>>,
     len: Option<u64>,
     ranges: bool,
     content_type: Option<String>,
@@ -235,6 +261,9 @@ async fn detect_extension(
         return None;
     }
     let mut get = client.get(url).header(RANGE, "bytes=0-1023");
+    if let Some(h) = headers {
+        get = apply_headers(get, h);
+    }
     if let Some(r) = referer {
         get = get.header(REFERER, r);
     }
@@ -275,7 +304,14 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
     }
 
     if task.segment_states.is_empty() {
-        match analyze(&manager.client, &task.url, task.referer.as_deref()).await {
+        match analyze(
+            &manager.client,
+            &task.url,
+            task.referer.as_deref(),
+            Some(&task.headers),
+        )
+        .await
+        {
             Ok((len, ranges, cd_filename, content_type)) => {
                 if !task.filename_from_user {
                     if let Some(cd) = cd_filename {
@@ -293,6 +329,7 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
                     &manager.client,
                     &task.url,
                     task.referer.as_deref(),
+                    Some(&task.headers),
                     len,
                     ranges,
                     content_type,
@@ -310,7 +347,6 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
                     .to_string_lossy()
                     .to_string();
                 task.segment_states = build_segments(len, task.segments, ranges);
-                let _ = std::fs::remove_file(&task.file_path);
             }
             Err(e) => {
                 manager.set_status(&id, TaskStatus::Error, Some(e));
@@ -325,6 +361,42 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
             let _ = std::fs::remove_file(&task.file_path);
             if let Some(seg) = task.segment_states.first_mut() {
                 seg.written = 0;
+            }
+        }
+    }
+
+    {
+        let settings = manager.settings.read().clone();
+        if settings.sort_by_type {
+            if let Some(sub) = super::manager::category_for(&task.filename) {
+                let base = Path::new(&task.save_dir);
+                if base.file_name().map(|f| f != sub).unwrap_or(true) {
+                    task.save_dir = base.join(sub).to_string_lossy().to_string();
+                }
+            }
+            task.file_path = Path::new(&task.save_dir)
+                .join(&task.filename)
+                .to_string_lossy()
+                .to_string();
+        }
+        if Path::new(&task.file_path).exists() {
+            match settings.duplicate_policy.as_str() {
+                "skip" => {
+                    manager.set_status(&id, TaskStatus::Completed, None);
+                    return;
+                }
+                "overwrite" => {
+                    let _ = std::fs::remove_file(&task.file_path);
+                }
+                _ => {
+                    if let Some(unique) = super::manager::unique_path(Path::new(&task.file_path)) {
+                        task.file_path = unique.to_string_lossy().to_string();
+                        task.filename = unique
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or(task.filename);
+                    }
+                }
             }
         }
     }
@@ -364,6 +436,7 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
         let tid = id.clone();
         let url = task.url.clone();
         let referer = task.referer.clone();
+        let headers = task.headers.clone();
         let fp = file_path.clone();
         let tok = token.clone();
         let pool = pool.clone();
@@ -400,9 +473,17 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
                     break;
                 };
                 let idx = seg.index;
-                let res =
-                    segment_loop(mgr.clone(), &tid, &url, referer.as_deref(), seg, Path::new(&fp), &tok)
-                        .await;
+                let res = segment_loop(
+                    mgr.clone(),
+                    &tid,
+                    &url,
+                    referer.as_deref(),
+                    Some(&headers),
+                    seg,
+                    Path::new(&fp),
+                    &tok,
+                )
+                .await;
                 ac.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 if tok.is_cancelled() {
                     break;
@@ -568,6 +649,26 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
                         }
                     }
                     if complete_ok {
+                        if let Some(t) = manager.get(&id) {
+                            if let Some(total) = t.total_size {
+                                if let Ok(md) = std::fs::metadata(&t.file_path) {
+                                    if md.len() != total {
+                                        complete_ok = false;
+                                        manager.set_status(
+                                            &id,
+                                            TaskStatus::Error,
+                                            Some(format!(
+                                                "文件尺寸校验失败：{} != {} 字节",
+                                                md.len(),
+                                                total
+                                            )),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if complete_ok {
                         manager.set_status(&id, TaskStatus::Completed, None);
                     }
                 }
@@ -583,6 +684,7 @@ async fn segment_loop(
     id: &str,
     url: &str,
     referer: Option<&str>,
+    headers: Option<&HashMap<String, String>>,
     seg: SegmentState,
     file_path: &Path,
     token: &CancellationToken,
@@ -596,6 +698,9 @@ async fn segment_loop(
     };
 
     let mut req = manager.client.get(url).header(RANGE, range_header.clone());
+    if let Some(h) = headers {
+        req = apply_headers(req, h);
+    }
     if let Some(r) = referer {
         req = req.header(REFERER, r);
     }

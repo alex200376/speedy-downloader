@@ -55,6 +55,7 @@ export const api = {
     save_dir?: string;
     segments?: number;
     referer?: string;
+    headers?: Record<string, string>;
   }): Promise<{ task?: DownloadTask; error?: string }> {
     try {
       const r = await request<DownloadTask>("/api/v1/tasks", {
@@ -96,7 +97,12 @@ export const api = {
 
   async confirmTask(
     id: string,
-    body: { filename?: string; save_dir?: string; segments?: number },
+    body: {
+      filename?: string;
+      save_dir?: string;
+      segments?: number;
+      headers?: Record<string, string>;
+    },
   ): Promise<{ task?: DownloadTask; error?: string }> {
     try {
       const r = await request<DownloadTask>(`/api/v1/tasks/${id}/confirm`, {
@@ -148,6 +154,18 @@ export const api = {
     }
   },
 };
+
+export async function verifyHash(
+  id: string,
+): Promise<import("./types").VerifyHashResult | null> {
+  if (!isTauri()) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<import("./types").VerifyHashResult>("verify_hash", { id });
+  } catch {
+    return null;
+  }
+}
 
 export async function chooseFolder(): Promise<string | null> {
   if (!isTauri()) return null;

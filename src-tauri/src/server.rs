@@ -28,6 +28,8 @@ pub struct CreateTaskBody {
     pub save_dir: Option<String>,
     pub segments: Option<usize>,
     pub referer: Option<String>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
     pub confirm: Option<bool>,
 }
 
@@ -36,6 +38,8 @@ pub struct ConfirmTaskBody {
     pub filename: Option<String>,
     pub save_dir: Option<String>,
     pub segments: Option<usize>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -98,8 +102,13 @@ async fn create_task(
         // Non-fatal: analyze is best-effort; if it fails we still create the task
         // so the user can see the dialog and retry.  Previously this blocked the
         // entire download when the probe request failed (e.g. local network URLs).
-        let _ = crate::download::engine::analyze(&st.manager.client, &body.url, body.referer.as_deref())
-            .await;
+        let _ = crate::download::engine::analyze(
+            &st.manager.client,
+            &body.url,
+            body.referer.as_deref(),
+            body.headers.as_ref(),
+        )
+        .await;
     }
     match st.manager.create_task(
         body.url,
@@ -107,6 +116,7 @@ async fn create_task(
         body.save_dir,
         body.segments,
         body.referer,
+        body.headers,
         body.confirm.unwrap_or(false),
     ) {
         Ok(task) => {
@@ -153,7 +163,7 @@ async fn confirm_task(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<ConfirmTaskBody>,
 ) -> Json<ApiResponse<DownloadTask>> {
-    match st.manager.confirm_pending(&id, body.filename, body.save_dir, body.segments) {
+    match st.manager.confirm_pending(&id, body.filename, body.save_dir, body.segments, body.headers) {
         Ok(task) => {
             if let Some(tx) = st.pending.lock().unwrap().remove(&id) {
                 let _ = tx.send(Ok(task.clone()));
@@ -250,6 +260,13 @@ async fn update_settings(
         } else {
             body.accent
         },
+        duplicate_policy: match body.duplicate_policy.as_str() {
+            "overwrite" | "skip" => body.duplicate_policy,
+            _ => "rename".to_string(),
+        },
+        sort_by_type: body.sort_by_type,
+        notify_complete: body.notify_complete,
+        open_folder_on_complete: body.open_folder_on_complete,
         api_port: body.api_port,
     };
     let new = s.clone();

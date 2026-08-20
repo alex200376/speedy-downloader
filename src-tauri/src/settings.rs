@@ -11,11 +11,27 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_accent")]
     pub accent: String,
+    #[serde(default = "default_duplicate_policy")]
+    pub duplicate_policy: String,
+    #[serde(default)]
+    pub sort_by_type: bool,
+    #[serde(default = "default_true")]
+    pub notify_complete: bool,
+    #[serde(default)]
+    pub open_folder_on_complete: bool,
     pub api_port: u16,
 }
 
 fn default_accent() -> String {
     "zinc".to_string()
+}
+
+fn default_duplicate_policy() -> String {
+    "rename".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -32,6 +48,10 @@ impl Default for Settings {
             language: "zh".to_string(),
             theme: "dark".to_string(),
             accent: default_accent(),
+            duplicate_policy: default_duplicate_policy(),
+            sort_by_type: false,
+            notify_complete: default_true(),
+            open_folder_on_complete: false,
             api_port: 47812,
         }
     }

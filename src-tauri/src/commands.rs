@@ -272,6 +272,22 @@ pub fn get_native_info(app: AppHandle) -> Result<serde_json::Value, String> {
     }))
 }
 
+#[tauri::command]
+pub fn verify_hash(id: String, app: AppHandle) -> Result<serde_json::Value, String> {
+    let manager: tauri::State<Arc<crate::download::DownloadManager>> = app.state();
+    let task = manager.get(&id).ok_or_else(|| "任务不存在".to_string())?;
+    let path = Path::new(&task.file_path);
+    if !path.exists() {
+        return Err("文件不存在".into());
+    }
+    let (hash, matched) = crate::download::manager::verify_hash_file(path)?;
+    Ok(serde_json::json!({
+        "sha256": hash,
+        "matched": matched,
+        "filename": task.filename,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

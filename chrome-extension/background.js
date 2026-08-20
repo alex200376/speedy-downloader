@@ -61,11 +61,31 @@ async function updateBadge() {
   return online;
 }
 
+function existingTask(url) {
+  return fetch(`${API_BASE}/api/v1/tasks`, { cache: "no-store" })
+    .then((r) => r.json())
+    .then((j) => {
+      if (!j || !j.ok || !j.data) return null;
+      return j.data.find((t) => t.url === url && (t.status === "Downloading" || t.status === "Queued" || t.status === "Paused" || t.status === "Pending")) || null;
+    })
+    .catch(() => null);
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
   const { autoGrab = true } = await chrome.storage.sync.get("autoGrab");
   if (!autoGrab) return;
   if (!item.url || !/^https?:\/\//i.test(item.url)) return;
   if (item.filename && /\.(crdownload|part)$/i.test(item.filename)) return;
+
+  const dup = await existingTask(item.url);
+  if (dup) {
+    notify(
+      zh
+        ? `已在任务列表中，跳过重复抓取`
+        : `Already in task list, skipping duplicate grab`,
+    );
+    return;
+  }
 
   try {
     await downloads.pause(item.id);

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
@@ -37,5 +38,7 @@ pub struct DownloadTask {
     pub error: Option<String>,
     pub supports_ranges: bool,
     pub filename_from_user: bool,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     pub segment_states: Vec<SegmentState>,
 }

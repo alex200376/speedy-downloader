@@ -1,5 +1,6 @@
 mod commands;
 mod download;
+mod notify;
 mod server;
 mod settings;
 
@@ -21,6 +22,7 @@ pub fn run() {
             settings::save(&settings_path, &settings.read().clone());
 
             let manager = DownloadManager::new(data_dir, settings.clone());
+            manager.set_app(app.handle().clone());
             app.manage(manager.clone());
 
             let mgr = manager.clone();
@@ -48,6 +50,7 @@ pub fn run() {
             commands::open_extensions_page,
             commands::check_update,
             commands::open_url,
+            commands::verify_hash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

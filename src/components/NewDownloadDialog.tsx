@@ -23,6 +23,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
   const [saveDir, setSaveDir] = useState("");
   const [segments, setSegments] = useState(8);
   const [referer, setReferer] = useState("");
+  const [headersText, setHeadersText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -35,6 +36,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       setSaveDir(grab?.save_dir ?? settings?.save_dir ?? "");
       setSegments(settings?.default_segments ?? 8);
       setReferer(grab?.referer ?? "");
+      setHeadersText("");
       setError("");
     }
   }, [open, initialUrl, grab, settings]);
@@ -66,17 +68,33 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
     onClose();
   };
 
+  const parseHeaders = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const raw of headersText.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const idx = line.indexOf(":");
+      if (idx <= 0) continue;
+      const k = line.slice(0, idx).trim();
+      const v = line.slice(idx + 1).trim();
+      if (k) out[k] = v;
+    }
+    return out;
+  };
+
   const submit = async () => {
     if (!/^https?:\/\//i.test(url.trim())) {
       setError(t("dialog.invalidUrl"));
       return;
     }
+    const headers = parseHeaders();
     setBusy(true);
     if (grab) {
       const { task, error: err } = await api.confirmTask(grab.id, {
         filename: filename.trim() || undefined,
         save_dir: saveDir.trim() || undefined,
         segments,
+        headers,
       });
       setBusy(false);
       if (task) {
@@ -93,6 +111,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       save_dir: saveDir.trim() || undefined,
       segments,
       referer: referer.trim() || undefined,
+      headers,
     });
     setBusy(false);
     if (task) {
