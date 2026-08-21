@@ -1,5 +1,6 @@
 use super::manager::{build_segments, percent_decode, sanitize_filename, DownloadManager};
 use super::model::{SegmentState, TaskStatus};
+use super::ytdlp;
 use futures_util::stream::StreamExt;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, RANGE, REFERER};
 use reqwest::{StatusCode, Response};
@@ -132,9 +133,11 @@ fn apply_headers(
     req: reqwest::RequestBuilder,
     headers: &HashMap<String, String>,
 ) -> reqwest::RequestBuilder {
+    // 由程序控制的头，禁止用户覆盖
+    const BLOCKED: [&str; 4] = ["host", "content-length", "range", "accept-encoding"];
     let mut r = req;
     for (k, v) in headers {
-        if k.eq_ignore_ascii_case("range") || k.eq_ignore_ascii_case("host") {
+        if BLOCKED.contains(&k.to_ascii_lowercase().as_str()) {
             continue;
         }
         if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
@@ -294,6 +297,16 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
         Err(_) => return,
     };
 
+    let task = match manager.get(&id) {
+        Some(t) => t,
+        None => return,
+    };
+
+    if task.kind == "video" {
+        ytdlp::run_ytdlp_task(manager, id, task.url, task.quality.clone()).await;
+        return;
+    }
+
     let mut task = match manager.get(&id) {
         Some(t) => t,
         None => return,
@@ -304,14 +317,8 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
     }
 
     if task.segment_states.is_empty() {
-        match analyze(
-            &manager.client,
-            &task.url,
-            task.referer.as_deref(),
-            Some(&task.headers),
-        )
-        .await
-        {
+        let client = manager.client();
+        match analyze(&client, &task.url, task.referer.as_deref(), Some(&task.headers)).await {
             Ok((len, ranges, cd_filename, content_type)) => {
                 if !task.filename_from_user {
                     if let Some(cd) = cd_filename {
@@ -326,7 +333,7 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
                 task.total_size = len.filter(|n| *n > 0);
                 task.supports_ranges = ranges;
                 if let Some(ext) = detect_extension(
-                    &manager.client,
+                    &client,
                     &task.url,
                     task.referer.as_deref(),
                     Some(&task.headers),
@@ -643,7 +650,7 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
                                 manager.set_status(
                                     &id,
                                     TaskStatus::Error,
-                                    Some(format!("文件不完整：{}/{} 字节", t.downloaded, total)),
+                                    Some(format!("文件不完整：已接收 {}/{} 字节", t.downloaded, total)),
                                 );
                             }
                         }
@@ -697,7 +704,7 @@ async fn segment_loop(
         format!("bytes={}-{}", start, seg.end)
     };
 
-    let mut req = manager.client.get(url).header(RANGE, range_header.clone());
+    let mut req = manager.client().get(url).header(RANGE, range_header.clone());
     if let Some(h) = headers {
         req = apply_headers(req, h);
     }
@@ -805,4 +812,32 @@ async fn segment_loop(
     let file = buf.into_inner();
     file.sync_data().await.map_err(err_string)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_headers_blocks_controlled_and_sets_custom() {
+        let mut h = HashMap::new();
+        h.insert("Authorization".into(), "Bearer abc123".into());
+        h.insert("User-Agent".into(), "MyDownloader/1.0".into());
+        h.insert("Host".into(), "evil.example".into());
+        h.insert("Content-Length".into(), "99999".into());
+        h.insert("Range".into(), "bytes=0-10".into());
+        h.insert("Accept-Encoding".into(), "identity".into());
+
+        let url: reqwest::Url = "https://example.com/file.zip".parse().unwrap();
+        let req = apply_headers(reqwest::Client::new().get(url), &h)
+            .build()
+            .unwrap();
+
+        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer abc123");
+        assert_eq!(req.headers().get("user-agent").unwrap(), "MyDownloader/1.0");
+        assert!(req.headers().get("host").is_none());
+        assert!(req.headers().get("content-length").is_none());
+        assert!(req.headers().get("range").is_none());
+        assert!(req.headers().get("accept-encoding").is_none());
+    }
 }

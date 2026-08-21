@@ -51,6 +51,8 @@ pub fn run() {
             commands::check_update,
             commands::open_url,
             commands::verify_hash,
+            crate::download::ytdlp::install_video_tools,
+            crate::download::ytdlp::get_video_tools_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

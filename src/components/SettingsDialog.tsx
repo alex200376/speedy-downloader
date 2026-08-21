@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { chooseFolder, EXTENSION_DOWNLOAD_URL, openExtensionsPage, openUrl, prepareExtension } from "../api";
+import { chooseFolder, EXTENSION_DOWNLOAD_URL, getVideoToolsStatus, installVideoTools, isTauri, openExtensionsPage, openUrl, prepareExtension } from "../api";
 import { useSettingsStore } from "../store/settingsStore";
 import { useToastStore } from "../store/toastStore";
 import type { Settings } from "../types";
@@ -11,12 +11,24 @@ import {
   CopyIcon,
   CheckIcon,
   DownloadIcon,
-  SunIcon,
-  MoonIcon,
-  MonitorIcon,
   GlobeIcon,
-  ShieldIcon,
 } from "./icons";
+
+interface InstallProgress {
+  phase: string;
+  downloaded: number;
+  total: number | null;
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "…";
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
 
 interface Props {
   open: boolean;
@@ -25,38 +37,22 @@ interface Props {
 
 const THEMES = ["dark", "light", "system"] as const;
 
-function Section({
-  icon,
-  title,
-  children,
-}: {
-  icon: ReactNode;
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)]/40 p-4">
-      <div className="mb-3.5 flex items-center gap-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel)] text-[var(--text-2)]">
-          {icon}
-        </span>
-        <span className="text-[12.5px] font-bold tracking-wide text-[var(--text-2)]">
-          {title}
-        </span>
-      </div>
-      <div className="space-y-3.5">{children}</div>
-    </div>
-  );
-}
+const field = "input";
+const label = "mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]";
+const grid2 = "grid grid-cols-2 gap-3";
 
 export default function SettingsDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
   const { settings, save } = useSettingsStore();
   const toast = useToastStore((s) => s.push);
+  const [tab, setTab] = useState("appearance");
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [extPath, setExtPath] = useState("");
   const [browsers, setBrowsers] = useState<{ chrome: boolean; edge: boolean } | null>(null);
+  const [videoTools, setVideoTools] = useState<{ installed: boolean; ytdlp_version: string | null; ffmpeg_version: string | null; path: string } | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
 
   useEffect(() => {
     if (open && settings) setDraft(settings);
@@ -72,7 +68,24 @@ export default function SettingsDialog({ open, onClose }: Props) {
         }
       })
       .catch(() => {});
+    getVideoToolsStatus().then((s) => {
+      if (s) setVideoTools(s);
+    }).catch(() => {});
   }, [open]);
+
+  useEffect(() => {
+    if (!installing || !isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<InstallProgress>("tools-install-progress", (e) => {
+        setInstallProgress(e.payload);
+      }),
+    ).then((fn) => { unlisten = fn; });
+    return () => {
+      unlisten?.();
+      setInstallProgress(null);
+    };
+  }, [installing]);
 
   if (!open || !settings || !draft) return null;
 
@@ -101,60 +114,39 @@ export default function SettingsDialog({ open, onClose }: Props) {
     }
   };
 
-  const field = "input";
-  const label = "mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]";
-  const grid2 = "grid grid-cols-2 gap-3";
   const resolvedTheme = resolveTheme(draft.theme);
+  const proxyMode =
+    draft.proxy === "none" ? "none" : draft.proxy === "system" ? "system" : "custom";
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="animate-pop flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-[var(--shadow)]">
-        <div className="mb-4 flex shrink-0 items-center justify-between px-6 pt-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
-              <GlobeIcon width={17} height={17} />
-            </div>
-            <h2 className="text-[16px] font-bold">{t("settings.title")}</h2>
-          </div>
-          <button onClick={onClose} className="icon-btn">
-            <XIcon width={16} height={16} />
-          </button>
-        </div>
+  const TABS = [
+    { key: "appearance", label: t("settings.appearance") },
+    { key: "downloads", label: t("settings.downloads") },
+    { key: "behavior", label: t("settings.behavior") },
+    { key: "language", label: t("settings.language") },
+    { key: "extension", label: t("settings.extension") },
+  ];
 
-        <div className="space-y-4 overflow-y-auto px-6 pb-6">
-          {/* Appearance */}
-          <div>
-            <div className="mb-2 text-[11.5px] font-bold uppercase tracking-widest text-[var(--muted)]">
-              {t("settings.appearance")}
-            </div>
+  const renderTab = () => {
+    switch (tab) {
+      case "appearance":
+        return (
+          <>
             <ThemePreview theme={resolvedTheme} accent={draft.accent} />
-
-            <div className="mt-3">
+            <div className="mt-4">
               <label className={label}>{t("settings.theme")}</label>
-              <div className="seg">
+              <select
+                value={draft.theme}
+                onChange={(e) => set({ theme: e.target.value })}
+                className={`${field} cursor-pointer`}
+              >
                 {THEMES.map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => set({ theme: m })}
-                    className={`seg-btn flex-1 ${draft.theme === m ? "on" : ""}`}
-                  >
-                    {m === "dark" ? (
-                      <MoonIcon width={14} height={14} />
-                    ) : m === "light" ? (
-                      <SunIcon width={14} height={14} />
-                    ) : (
-                      <MonitorIcon width={14} height={14} />
-                    )}
+                  <option key={m} value={m}>
                     {t(`theme.${m}`)}
-                  </button>
+                  </option>
                 ))}
-              </div>
+              </select>
             </div>
-
-            <div className="mt-3.5">
+            <div className="mt-4">
               <label className={label}>{t("settings.accent")}</label>
               <div className="flex flex-wrap gap-2">
                 {ACCENTS.map((a) => {
@@ -181,10 +173,11 @@ export default function SettingsDialog({ open, onClose }: Props) {
                 })}
               </div>
             </div>
-          </div>
-
-          {/* Downloads */}
-          <Section icon={<DownloadIcon width={14} height={14} />} title={t("settings.downloads")}>
+          </>
+        );
+      case "downloads":
+        return (
+          <>
             <div>
               <label className={label}>{t("settings.saveDir")}</label>
               <div className="flex gap-2">
@@ -225,6 +218,35 @@ export default function SettingsDialog({ open, onClose }: Props) {
             </div>
 
             <div>
+              <label className={label}>{t("settings.proxy")}</label>
+              <div className="flex gap-2">
+                <select
+                  value={proxyMode}
+                  onChange={(e) => {
+                    const m = e.target.value;
+                    set({ proxy: m === "custom" ? draft.proxy : m });
+                  }}
+                  className={`${field} w-32 shrink-0 cursor-pointer`}
+                >
+                  <option value="system">{t("settings.proxySystem")}</option>
+                  <option value="none">{t("settings.proxyNone")}</option>
+                  <option value="custom">{t("settings.proxyCustom")}</option>
+                </select>
+                {proxyMode === "custom" && (
+                  <input
+                    value={draft.proxy}
+                    onChange={(e) => set({ proxy: e.target.value })}
+                    placeholder="http://127.0.0.1:7890"
+                    className={`${field} font-mono text-[12px]`}
+                  />
+                )}
+              </div>
+              {proxyMode === "custom" && (
+                <p className="mt-1 text-[11.5px] text-[var(--muted)]">{t("settings.proxyHint")}</p>
+              )}
+            </div>
+
+            <div>
               <label className={label}>{t("settings.speedLimit")}</label>
               <div className="relative">
                 <input
@@ -240,22 +262,11 @@ export default function SettingsDialog({ open, onClose }: Props) {
               </div>
               <p className="mt-1 text-[11.5px] text-[var(--muted)]">{t("settings.speedLimitKbps")}</p>
             </div>
-          </Section>
-
-          {/* Language */}
-          <Section icon={<GlobeIcon width={14} height={14} />} title={t("settings.language")}>
-            <select
-              value={draft.language}
-              onChange={(e) => set({ language: e.target.value })}
-              className={`${field} cursor-pointer`}
-            >
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-            </select>
-          </Section>
-
-          {/* Behavior */}
-          <Section icon={<ShieldIcon width={14} height={14} />} title={t("settings.behavior")}>
+          </>
+        );
+      case "behavior":
+        return (
+          <>
             <div>
               <label className={label}>{t("settings.duplicatePolicy")}</label>
               <select
@@ -301,10 +312,25 @@ export default function SettingsDialog({ open, onClose }: Props) {
                 {t("settings.openFolderOnComplete")}
               </span>
             </label>
-          </Section>
-
-          {/* Extension */}
-          <Section icon={<GlobeIcon width={14} height={14} />} title={t("settings.extension")}>
+          </>
+        );
+      case "language":
+        return (
+          <div>
+            <label className={label}>{t("settings.language")}</label>
+            <select
+              value={draft.language}
+              onChange={(e) => set({ language: e.target.value })}
+              className={`${field} cursor-pointer`}
+            >
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        );
+      case "extension":
+        return (
+          <>
             <p className="text-[12px] text-[var(--text-2)]">{t("settings.extensionDesc")}</p>
             <div className="space-y-1.5 text-[11.5px] text-[var(--text-2)]">
               {browsers && (
@@ -320,6 +346,78 @@ export default function SettingsDialog({ open, onClose }: Props) {
                   {extPath}
                 </div>
               )}
+            </div>
+            <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-2)]/50 p-3.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[12.5px] font-semibold text-[var(--text)]">Video download tools (yt-dlp + ffmpeg)</div>
+                  <div className="mt-1 text-[11.5px] text-[var(--text-2)]">
+                    {videoTools?.installed
+                      ? `Installed · yt-dlp ${videoTools.ytdlp_version ?? "?"} · ffmpeg ${videoTools.ffmpeg_version ?? "?"}`
+                      : "Not installed"}
+                  </div>
+                  <div className="mt-1 break-all font-mono text-[11px] text-[var(--muted)]">
+                    {videoTools?.path ?? ""}
+                  </div>
+                </div>
+                <button
+                  onClick={async () => {
+                    setInstalling(true);
+                    try {
+                      const s = await installVideoTools();
+                      if (s) {
+                        setVideoTools(s);
+                        toast("success", s.installed ? "Tools installed successfully" : "Install completed");
+                      } else {
+                        toast("error", "Install failed — is the app running?");
+                      }
+                    } catch (e) {
+                      toast("error", `Install failed: ${String(e)}`);
+                    } finally {
+                      setInstalling(false);
+                    }
+                  }}
+                  disabled={installing}
+                  className="btn btn-outline px-2 text-[12px]"
+                >
+                  <DownloadIcon width={13} height={13} />
+                  {installing ? "Installing..." : videoTools?.installed ? "Reinstall / Update" : "Install tools"}
+                </button>
+              </div>
+              {installing && installProgress && (() => {
+                const pct = installProgress.total && installProgress.total > 0
+                  ? Math.min(100, (installProgress.downloaded / installProgress.total) * 100)
+                  : null;
+                const phaseLabel = installProgress.phase === "yt-dlp" ? "Downloading yt-dlp…"
+                  : installProgress.phase === "ffmpeg" ? "Downloading ffmpeg…"
+                  : installProgress.phase === "extracting" ? "Extracting ffmpeg…"
+                  : "Working…";
+                return (
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between text-[11px] text-[var(--text-2)]">
+                      <span>{phaseLabel}</span>
+                      <span>
+                        {installProgress.total
+                          ? `${formatBytes(installProgress.downloaded)} / ${formatBytes(installProgress.total)}${pct !== null ? ` (${pct.toFixed(0)}%)` : ""}`
+                          : formatBytes(installProgress.downloaded)}
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg)]">
+                      {pct !== null ? (
+                        <div
+                          className="h-full rounded-full bg-[var(--accent)] transition-all duration-300"
+                          style={{ width: `${pct}%` }}
+                        />
+                      ) : (
+                        <div className="h-full w-1/3 animate-pulse rounded-full bg-[var(--accent)]" />
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+              <p className="mt-2 text-[11px] text-[var(--muted)]">
+                yt-dlp (~17.5MB) + ffmpeg (~80MB) will be downloaded on first install. Windows Defender may flag them as false-positive.
+              </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -340,8 +438,48 @@ export default function SettingsDialog({ open, onClose }: Props) {
                 {copied ? t("action.copy") + " ✓" : t("action.copy")}
               </button>
             </div>
-          </Section>
+          </>
+        );
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="animate-pop flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-[var(--shadow)]">
+        <div className="flex shrink-0 items-center justify-between px-6 pt-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
+              <GlobeIcon width={17} height={17} />
+            </div>
+            <h2 className="text-[16px] font-bold">{t("settings.title")}</h2>
+          </div>
+          <button onClick={onClose} className="icon-btn">
+            <XIcon width={16} height={16} />
+          </button>
         </div>
+
+        <div className="mt-3 flex shrink-0 gap-1 border-b border-[var(--border)] px-4">
+          {TABS.map((tb) => (
+            <button
+              key={tb.key}
+              onClick={() => setTab(tb.key)}
+              className={`-mb-px border-b-2 px-3.5 py-2 text-[12.5px] font-semibold transition ${
+                tab === tb.key
+                  ? "border-[var(--accent)] text-[var(--accent)]"
+                  : "border-transparent text-[var(--muted)] hover:text-[var(--text)]"
+              }`}
+            >
+              {tb.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="space-y-4 overflow-y-auto px-6 py-5">{renderTab()}</div>
 
         <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[var(--border-soft)] px-6 py-4">
           <button onClick={onClose} className="btn btn-outline">

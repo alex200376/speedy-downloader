@@ -13,6 +13,29 @@ interface Props {
   onClose: () => void;
 }
 
+const VIDEO_QUALITIES = [
+  { key: "best", label: "Best (video+audio)", labelZh: "最佳（视频+音频）" },
+  { key: "1080p", label: "1080p", labelZh: "1080p" },
+  { key: "720p", label: "720p", labelZh: "720p" },
+  { key: "480p", label: "480p", labelZh: "480p" },
+  { key: "video", label: "Video only", labelZh: "仅视频" },
+  { key: "audio", label: "Audio only", labelZh: "仅音频" },
+] as const;
+
+function isVideoHost(url: string): boolean {
+  try {
+    let u = url.trim();
+    if (!/^https?:\/\//i.test(u)) return false;
+    if (u.includes("://youtube.com") || u.includes("://youtu.be")) return true;
+    if (u.includes("://twitter.com") || u.includes("://x.com")) return true;
+    if (u.includes("://bilibili.com")) return true;
+    if (u.includes("://tiktok.com")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: Props) {
   const { t } = useTranslation();
   const settings = useSettingsStore((s) => s.settings);
@@ -28,6 +51,8 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
   const [error, setError] = useState("");
 
   const isGrab = !!grab;
+  const isVideo = isVideoHost(url) || grab?.kind === "video";
+  const [quality, setQuality] = useState<string>("best");
 
   useEffect(() => {
     if (open) {
@@ -38,6 +63,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       setReferer(grab?.referer ?? "");
       setHeadersText("");
       setError("");
+      setQuality("best");
     }
   }, [open, initialUrl, grab, settings]);
 
@@ -88,6 +114,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       return;
     }
     const headers = parseHeaders();
+    const kind = isVideo ? "video" : "http";
     setBusy(true);
     if (grab) {
       const { task, error: err } = await api.confirmTask(grab.id, {
@@ -95,6 +122,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
         save_dir: saveDir.trim() || undefined,
         segments,
         headers,
+        quality: isVideo ? quality : undefined,
       });
       setBusy(false);
       if (task) {
@@ -112,6 +140,8 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       segments,
       referer: referer.trim() || undefined,
       headers,
+      kind,
+      quality: isVideo ? quality : undefined,
     });
     setBusy(false);
     if (task) {
@@ -238,6 +268,25 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
               className={`${input} resize-none font-mono text-[12.5px]`}
             />
           </div>
+
+          {isVideo && (
+            <div>
+              <label className="mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]">
+                {t("dialog.videoQuality")}
+              </label>
+              <select
+                value={quality}
+                onChange={(e) => setQuality(e.target.value)}
+                className={`${input} cursor-pointer`}
+              >
+                {VIDEO_QUALITIES.map((q) => (
+                  <option key={q.key} value={q.key}>
+                    {t("videoQuality." + q.key, q.key)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {error && (
             <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-[12.5px] text-rose-400">

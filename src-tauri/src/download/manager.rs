@@ -154,6 +154,8 @@ impl DownloadManager {
         referer: Option<String>,
         headers: Option<HashMap<String, String>>,
         confirm: bool,
+        kind: Option<String>,
+        quality: Option<String>,
     ) -> Result<DownloadTask, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("URL 必须是 http(s) 地址".into());
@@ -200,6 +202,8 @@ impl DownloadManager {
             supports_ranges: false,
             filename_from_user: user_provided,
             segment_states: Vec::new(),
+            kind: kind.unwrap_or_else(|| "http".into()),
+            quality,
         };
 
         self.tasks.lock().insert(id.clone(), task.clone());
@@ -222,6 +226,7 @@ impl DownloadManager {
         save_dir: Option<String>,
         segments: Option<usize>,
         headers: Option<HashMap<String, String>>,
+        quality: Option<String>,
     ) -> Result<DownloadTask, String> {
         let mut tasks = self.tasks.lock();
         let task = tasks.get_mut(id).ok_or_else(|| "任务不存在".to_string())?;
@@ -253,6 +258,9 @@ impl DownloadManager {
             task.segments = s.clamp(1, 32);
         } else if task.segments == 0 {
             task.segments = settings.default_segments.clamp(1, 32);
+        }
+        if let Some(q) = quality {
+            task.quality = Some(q);
         }
         if settings.sort_by_type {
             if let Some(sub) = category_for(&task.filename) {
@@ -488,7 +496,7 @@ impl DownloadManager {
         }
     }
 
-    fn on_completed(&self, task: &DownloadTask) {
+    pub(crate) fn on_completed(&self, task: &DownloadTask) {
         let settings = self.settings.read().clone();
         if settings.notify_complete {
             let filename = task.filename.clone();
@@ -503,15 +511,6 @@ impl DownloadManager {
             }
         }
     }
-
-    pub fn cleanup_finished(&self) {
-        let mut tasks = self.tasks.lock();
-        tasks.retain(|_, t| {
-            t.status != TaskStatus::Completed && t.status != TaskStatus::Canceled
-        });
-        drop(tasks);
-        self.persist();
-    }
 }
 
 pub fn now_ms() -> u64 {
@@ -519,6 +518,37 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     d.as_millis() as u64
+}
+
+/// 根据设置构建 HTTP 客户端。
+/// proxy 取值:"system"(跟随系统代理)、"none"(直连)、
+/// 或显式代理 URL(如 http://127.0.0.1:7890、socks5://…)。
+fn build_client(proxy: &str) -> reqwest::Client {
+    let mut b = reqwest::Client::builder()
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )
+        .connect_timeout(Duration::from_secs(15));
+    match proxy.trim() {
+        "" | "system" => {
+            // system-proxy 特性会自动启用 Windows/macOS 系统代理
+        }
+        "none" => {
+            b = b.no_proxy();
+        }
+        url => {
+            if url.starts_with("http://")
+                || url.starts_with("https://")
+                || url.starts_with("socks4://")
+                || url.starts_with("socks5://")
+            {
+                if let Ok(p) = reqwest::Proxy::all(url) {
+                    b = b.proxy(p);
+                }
+            }
+        }
+    }
+    b.build().expect("failed to build http client")
 }
 
 pub fn sanitize_filename(name: &str) -> String {

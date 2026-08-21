@@ -21,11 +21,11 @@ function health() {
     .catch(() => null);
 }
 
-function sendToApp(url, filename, referer, confirm) {
+function sendToApp(url, filename, referer, confirm, kind) {
   return fetch(`${API_BASE}/api/v1/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, filename, referer, confirm }),
+    body: JSON.stringify({ url, filename, referer, confirm, kind }),
   })
     .then((r) => r.json())
     .catch(() => ({ ok: false, error: "app offline" }));
@@ -66,7 +66,7 @@ function existingTask(url) {
     .then((r) => r.json())
     .then((j) => {
       if (!j || !j.ok || !j.data) return null;
-      return j.data.find((t) => t.url === url && (t.status === "Downloading" || t.status === "Queued" || t.status === "Paused" || t.status === "Pending")) || null;
+      return j.data.find((t) => t.url === url) || null;
     })
     .catch(() => null);
 }
@@ -92,7 +92,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   } catch (e) {}
 
   const referer = item.referrer || undefined;
-  const result = await sendToApp(item.url, item.filename, referer, true);
+  const result = await sendToApp(item.url, item.filename, referer, true, "http");
 
   if (result && result.ok) {
     try {
@@ -129,6 +129,11 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Download with SpeedDownloader",
     contexts: ["video", "audio", "image"],
   });
+  chrome.contextMenus.create({
+    id: "sd-video-page",
+    title: "Download video with SpeedDownloader",
+    contexts: ["page"],
+  });
   updateBadge();
 });
 
@@ -139,7 +144,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!url) return;
   const referer = tab && tab.url ? tab.url : undefined;
   const filename = filenameFromUrl(url);
-  sendToApp(url, filename, referer, true).then((r) => {
+  const kind = info.menuItemId === "sd-video-page" && tab ? "video" : "http";
+  const targetUrl = kind === "video" && tab ? tab.url : url;
+  sendToApp(targetUrl, filename, referer, true, kind).then((r) => {
     if (r && r.ok) updateBadge();
     else if (r && r.error) notify(zh ? `未能添加下载：${r.error}` : `Failed to add download: ${r.error}`);
   });
@@ -148,9 +155,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
 
-  if (msg.type === "SD_GRAB") {
+  if (msg.type === "SD_GRAB" || msg.type === "SD_VIDEO_GRAB") {
+    const kind = msg.type === "SD_VIDEO_GRAB" ? "video" : "http";
     const referer = msg.referer || (sender && sender.tab && sender.tab.url) || undefined;
-    sendToApp(msg.url, msg.filename, referer, true).then((r) => {
+    sendToApp(msg.url, msg.filename, referer, true, kind).then((r) => {
       sendResponse(r);
       if (r && r.ok) updateBadge();
       else if (r && r.error) notify(zh ? `未能添加下载：${r.error}` : `Failed to add download: ${r.error}`);

@@ -19,6 +19,8 @@ pub struct Settings {
     pub notify_complete: bool,
     #[serde(default)]
     pub open_folder_on_complete: bool,
+    #[serde(default = "default_proxy")]
+    pub proxy: String,
     pub api_port: u16,
 }
 
@@ -32,6 +34,10 @@ fn default_duplicate_policy() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_proxy() -> String {
+    "system".to_string()
 }
 
 impl Default for Settings {
@@ -52,6 +58,7 @@ impl Default for Settings {
             sort_by_type: false,
             notify_complete: default_true(),
             open_folder_on_complete: false,
+            proxy: default_proxy(),
             api_port: 47812,
         }
     }

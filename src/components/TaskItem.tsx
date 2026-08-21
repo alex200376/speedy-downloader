@@ -129,6 +129,11 @@ export default function TaskItem({ task }: Props) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[14px] font-semibold">{task.filename}</span>
+            {task.kind === "video" && (
+              <span className="shrink-0 rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-violet-400">
+                VIDEO
+              </span>
+            )}
             <span
               className={`flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium ${st.cls}`}
             >
@@ -176,15 +181,22 @@ export default function TaskItem({ task }: Props) {
 
         <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
           {task.status === "Downloading" || task.status === "Queued" ? (
-            <IconBtn title={t("action.pause")} onClick={handlePause}>
-              <PauseIcon width={15} height={15} />
-            </IconBtn>
+            task.kind === "video" ? null : (
+              <IconBtn title={t("action.pause")} onClick={handlePause}>
+                <PauseIcon width={15} height={15} />
+              </IconBtn>
+            )
           ) : task.status === "Paused" || task.status === "Error" ? (
             <IconBtn title={t("action.resume")} onClick={handleResume} accent>
               <PlayIcon width={15} height={15} />
             </IconBtn>
           ) : null}
-          {active && (
+          {task.status === "Downloading" && task.kind !== "video" && (
+            <IconBtn title={t("action.cancel")} onClick={handleCancel} danger>
+              <XIcon width={15} height={15} />
+            </IconBtn>
+          )}
+          {task.status === "Downloading" && task.kind === "video" && (
             <IconBtn title={t("action.cancel")} onClick={handleCancel} danger>
               <XIcon width={15} height={15} />
             </IconBtn>

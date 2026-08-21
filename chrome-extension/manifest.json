@@ -3,7 +3,7 @@
   "name": "SpeedDownloader 极速下载器",
   "version": "1.0.0",
   "description": "Grab downloads from the browser and send them to the SpeedDownloader desktop app. 从浏览器抓取下载并发送到极速下载器桌面应用。",
-  "permissions": ["downloads", "storage", "contextMenus", "notifications"],
+  "permissions": ["downloads", "storage", "contextMenus", "notifications", "webRequest"],
   "host_permissions": ["http://127.0.0.1:47812/*", "<all_urls>"],
   "background": {
     "service_worker": "background.js"

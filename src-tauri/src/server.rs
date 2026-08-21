@@ -31,6 +31,10 @@ pub struct CreateTaskBody {
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
     pub confirm: Option<bool>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +44,8 @@ pub struct ConfirmTaskBody {
     pub segments: Option<usize>,
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub quality: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -85,13 +91,14 @@ struct Health {
 async fn health() -> Json<ApiResponse<Health>> {
     Json(ApiResponse::ok(Health {
         name: "SpeedDownloader".into(),
-        version: "1.0.0".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
         online: true,
     }))
 }
 
 async fn list_tasks(State(st): State<Arc<AppState>>) -> Json<ApiResponse<Vec<DownloadTask>>> {
-    Json(ApiResponse::ok(st.manager.list()))
+    let tasks = st.manager.list().into_iter().map(|t| t.masked()).collect();
+    Json(ApiResponse::ok(tasks))
 }
 
 async fn create_task(
@@ -102,8 +109,9 @@ async fn create_task(
         // Non-fatal: analyze is best-effort; if it fails we still create the task
         // so the user can see the dialog and retry.  Previously this blocked the
         // entire download when the probe request failed (e.g. local network URLs).
+        let client = st.manager.client();
         let _ = crate::download::engine::analyze(
-            &st.manager.client,
+            &client,
             &body.url,
             body.referer.as_deref(),
             body.headers.as_ref(),
@@ -118,10 +126,12 @@ async fn create_task(
         body.referer,
         body.headers,
         body.confirm.unwrap_or(false),
+        body.kind,
+        body.quality,
     ) {
         Ok(task) => {
             if task.status != crate::download::TaskStatus::Pending {
-                return Json(ApiResponse::ok(task));
+                return Json(ApiResponse::ok(task.masked()));
             }
             let (tx, rx) = oneshot::channel();
             st.pending.lock().unwrap().insert(task.id.clone(), tx);
@@ -145,7 +155,7 @@ async fn create_task(
             let result = tokio::time::timeout(Duration::from_secs(120), rx).await;
             let removed = st.pending.lock().unwrap().remove(&id);
             match result {
-                Ok(Ok(Ok(confirmed))) => Json(ApiResponse::ok(confirmed)),
+                Ok(Ok(Ok(confirmed))) => Json(ApiResponse::ok(confirmed.masked())),
                 _ => {
                     if removed.is_some() {
                         st.manager.reject_pending(&id);
@@ -163,12 +173,12 @@ async fn confirm_task(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<ConfirmTaskBody>,
 ) -> Json<ApiResponse<DownloadTask>> {
-    match st.manager.confirm_pending(&id, body.filename, body.save_dir, body.segments, body.headers) {
+    match st.manager.confirm_pending(&id, body.filename, body.save_dir, body.segments, body.headers, body.quality) {
         Ok(task) => {
             if let Some(tx) = st.pending.lock().unwrap().remove(&id) {
                 let _ = tx.send(Ok(task.clone()));
             }
-            Json(ApiResponse::ok(task))
+            Json(ApiResponse::ok(task.masked()))
         }
         Err(e) => Json(ApiResponse::err(e)),
     }
@@ -267,12 +277,17 @@ async fn update_settings(
         sort_by_type: body.sort_by_type,
         notify_complete: body.notify_complete,
         open_folder_on_complete: body.open_folder_on_complete,
+        proxy: body.proxy,
         api_port: body.api_port,
     };
     let new = s.clone();
+    let proxy_changed = new.proxy != old.proxy;
     drop(s);
     crate::settings::save(&st.manager.data_dir.join("settings.json"), &new);
     st.manager.resize_semaphore(new.max_concurrent);
+    if proxy_changed {
+        st.manager.rebuild_client();
+    }
     Json(ApiResponse::ok(new))
 }
 

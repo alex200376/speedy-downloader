@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useTaskStore, useTaskStats } from "./store/taskStore";
 import { useSettingsStore } from "./store/settingsStore";
@@ -10,7 +10,16 @@ import TaskList from "./components/TaskList";
 import NewDownloadDialog from "./components/NewDownloadDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import UpdateDialog from "./components/UpdateDialog";
+import WindowControls from "./components/WindowControls";
 import Toasts from "./components/Toasts";
+
+function extractDropUrl(dt: DataTransfer): string {
+  for (const source of [dt.getData("text/uri-list"), dt.getData("text/plain")]) {
+    const m = source.match(/https?:\/\/[^\s<>"']+/g);
+    if (m && m.length) return m[0];
+  }
+  return "";
+}
 
 export default function App() {
   const { t } = useTranslation();
@@ -23,6 +32,8 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
+  const [droppedUrl, setDroppedUrl] = useState("");
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -59,15 +70,61 @@ export default function App() {
 
   const closeNew = () => {
     setShowNew(false);
+    setDroppedUrl("");
     doneGrab();
   };
 
+  const openNew = () => {
+    setDroppedUrl("");
+    setShowNew(true);
+  };
+
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("text/uri-list") || e.dataTransfer.types.includes("text/plain")) {
+      setDragOver(true);
+    }
+  };
+
+  const handleDragLeave = () => setDragOver(false);
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const url = extractDropUrl(e.dataTransfer);
+    if (url) {
+      setDroppedUrl(url);
+      setShowNew(true);
+    }
+  };
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <Sidebar onNew={() => setShowNew(true)} onSettings={() => setShowSettings(true)} />
+    <div className="flex flex-col h-screen w-screen overflow-hidden"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Custom title bar */}
+      <div className="flex shrink-0 h-8 pl-3 border-b border-[var(--border-soft)] bg-[var(--bg)]">
+        <span className="flex items-center text-[11px] font-semibold text-[var(--muted)] select-none">
+          SpeedDownloader
+        </span>
+        <div className="flex-1" data-tauri-drag-region />
+        <WindowControls />
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+      <Sidebar onNew={openNew} onSettings={() => setShowSettings(true)} />
 
       <main className="relative flex flex-1 flex-col overflow-hidden">
-        <header className="flex shrink-0 items-center gap-4 border-b border-[var(--border-soft)] bg-[var(--bg-2)]/50 px-6 py-3">
+          {dragOver && (
+            <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-[var(--bg)]/70">
+              <div className="animate-pop rounded-lg border border-dashed border-[var(--accent)] bg-[var(--panel)] px-6 py-4 text-[14px] font-semibold text-[var(--accent)]">
+                {t("drop.hint")}
+              </div>
+            </div>
+          )}
+          <header className="flex shrink-0 items-center gap-4 border-b border-[var(--border-soft)] bg-[var(--bg-2)]/50 px-6 py-3">
           <div className="relative w-72">
             <SearchIcon
               width={15}
@@ -105,17 +162,19 @@ export default function App() {
             <CloudIcon width={17} height={17} />
           </button>
 
-          <button onClick={() => setShowNew(true)} className="btn btn-primary">
+          <button onClick={openNew} className="btn btn-primary">
             <PlusIcon width={15} height={15} />
             {t("header.newDownload")}
           </button>
         </header>
 
-        <TaskList onNew={() => setShowNew(true)} />
+        <TaskList onNew={openNew} />
       </main>
+      </div>
 
       <NewDownloadDialog
         open={showNew || !!grab}
+        initialUrl={droppedUrl}
         grab={grab}
         onClose={closeNew}
       />

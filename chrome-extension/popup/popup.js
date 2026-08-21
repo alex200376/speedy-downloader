@@ -12,9 +12,12 @@ const I18N = {
     downloading: "下载中",
     completed: "完成",
     paused: "暂停",
-    queued: "排队",
+    queued: "排队中",
     error: "出错",
-    canceled: "取消",
+    canceled: "已取消",
+    video: "下载视频",
+    sentVideo: "已发送视频任务到极速下载器",
+    failVideo: "极速下载器未运行或缺少视频工具",
   },
   en: {
     statusOnline: "App online",
@@ -32,6 +35,9 @@ const I18N = {
     queued: "Queued",
     error: "Error",
     canceled: "Canceled",
+    video: "Download video",
+    sentVideo: "Video task sent to SpeedDownloader",
+    failVideo: "SpeedDownloader is not running or video tools missing",
   },
 };
 
@@ -47,6 +53,7 @@ const t = (key) => I18N[lang][key] || I18N.en[key];
 function applyLang() {
   $("urlInput").placeholder = t("placeholder");
   $("grabBtn").textContent = t("grab");
+  $("grabVideoBtn").textContent = t("video");
   $("autoGrabText").textContent = t("autoGrab");
   $("tasksTitle").textContent = t("recent");
   $("taskEmpty").textContent = t("empty");
@@ -169,6 +176,18 @@ $("grabBtn").addEventListener("click", async () => {
     $("urlInput").value = "";
     refresh();
   }
+});
+
+$("grabVideoBtn").addEventListener("click", async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.url) return;
+  $("grabVideoBtn").disabled = true;
+  const r = await new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "SD_VIDEO_GRAB", url: tab.url }, (resp) => res(resp || { ok: false })),
+  );
+  $("grabVideoBtn").disabled = false;
+  toast(r.ok ? t("sentVideo") : t("failVideo"), !!r.ok);
+  if (r.ok) refresh();
 });
 
 $("autoGrab").addEventListener("change", (e) => {

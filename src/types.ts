@@ -13,6 +13,7 @@ export interface GrabRequest {
   filename: string;
   save_dir: string;
   referer: string | null;
+  kind?: "http" | "video";
 }
 
 export interface SegmentState {
@@ -41,6 +42,8 @@ export interface DownloadTask {
   supports_ranges: boolean;
   filename_from_user: boolean;
   segment_states: SegmentState[];
+  kind?: "http" | "video";
+  quality?: string | null;
 }
 
 export interface Settings {
@@ -55,6 +58,7 @@ export interface Settings {
   sort_by_type: boolean;
   notify_complete: boolean;
   open_folder_on_complete: boolean;
+  proxy: string;
   api_port: number;
 }
 

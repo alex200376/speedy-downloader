@@ -56,6 +56,8 @@ export const api = {
     segments?: number;
     referer?: string;
     headers?: Record<string, string>;
+    kind?: "http" | "video";
+    quality?: string;
   }): Promise<{ task?: DownloadTask; error?: string }> {
     try {
       const r = await request<DownloadTask>("/api/v1/tasks", {
@@ -102,6 +104,7 @@ export const api = {
       save_dir?: string;
       segments?: number;
       headers?: Record<string, string>;
+      quality?: string;
     },
   ): Promise<{ task?: DownloadTask; error?: string }> {
     try {
@@ -236,6 +239,29 @@ export async function openUrl(url: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export interface VideoToolsStatus {
+  installed: boolean;
+  ytdlp_version: string | null;
+  ffmpeg_version: string | null;
+  path: string;
+}
+
+export async function getVideoToolsStatus(): Promise<VideoToolsStatus | null> {
+  if (!isTauri()) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<VideoToolsStatus>("get_video_tools_status");
+  } catch {
+    return null;
+  }
+}
+
+export async function installVideoTools(): Promise<VideoToolsStatus | null> {
+  if (!isTauri()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke<VideoToolsStatus>("install_video_tools");
 }
 
 export function formatBytes(n: number): string {
