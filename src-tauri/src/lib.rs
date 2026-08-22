@@ -35,6 +35,15 @@ pub fn run() {
                 server::serve(app_handle, mgr, st).await;
             });
 
+            // Auto-install aria2 in background if not present
+            let aria2_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let data_dir = aria2_app.path().app_data_dir().unwrap_or_default();
+                if !crate::download::aria2::aria2_exists(&data_dir) {
+                    let _ = crate::download::aria2::install_aria2(aria2_app).await;
+                }
+            });
+
             setup_tray(app)?;
 
             Ok(())

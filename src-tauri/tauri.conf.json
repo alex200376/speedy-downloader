@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "category": "Utility",
     "shortDescription": "A modern multi-threaded download manager",
     "longDescription": "SpeedDownloader is a modern download manager with multi-segment downloads, resume support and a Chrome extension.",
@@ -39,6 +39,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "languages": ["English", "SimpChinese"]
+      }
+    }
   }
 }
