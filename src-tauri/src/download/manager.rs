@@ -104,6 +104,11 @@ struct ProgressStats {
 }
 
 impl DownloadManager {
+    fn clear_progress_sample(&self, id: &str) {
+        let mut stats = self.progress_stats.lock();
+        stats.per_task.remove(id);
+    }
+
     pub fn new(data_dir: PathBuf, settings: Arc<parking_lot::RwLock<Settings>>) -> Arc<Self> {
         let max_concurrent = settings.read().max_concurrent.max(1);
         let proxy = settings.read().proxy.clone();
@@ -399,6 +404,7 @@ impl DownloadManager {
         if let Some(token) = self.running.lock().remove(id) {
             token.cancel();
         }
+        self.clear_progress_sample(id);
         self.persist();
         self.notify_tasks();
         Ok(())
@@ -416,8 +422,10 @@ impl DownloadManager {
         if let Some(t) = tasks.get_mut(id) {
             t.status = TaskStatus::Queued;
             t.error = None;
+            t.speed = 0.0;
         }
         drop(tasks);
+        self.clear_progress_sample(id);
         self.persist();
         self.notify_tasks();
 
@@ -440,6 +448,7 @@ impl DownloadManager {
         if let Some(token) = self.running.lock().remove(id) {
             token.cancel();
         }
+        self.clear_progress_sample(id);
         self.persist();
         self.notify_tasks();
         Ok(())
@@ -448,6 +457,7 @@ impl DownloadManager {
     pub fn remove(&self, id: &str) -> Result<(), String> {
         self.cancel(id).ok();
         self.tasks.lock().remove(id);
+        self.clear_progress_sample(id);
         self.persist();
         self.notify_tasks();
         Ok(())
@@ -519,7 +529,7 @@ impl DownloadManager {
             .or_insert((now, downloaded, 0.0));
         let (t0, b0, ema) = *entry;
         let dt = now.duration_since(t0).as_secs_f64();
-        if dt >= 1.0 {
+        if dt >= 0.2 {
             let s = if downloaded >= b0 {
                 (downloaded - b0) as f64 / dt
             } else {
@@ -537,7 +547,7 @@ impl DownloadManager {
         let total_dl: u64 = tasks.values().map(|t| t.downloaded).sum();
         let gspeed = if let Some((gt, gb)) = stats.global {
             let dt = now.duration_since(gt).as_secs_f64();
-            if dt >= 1.0 {
+            if dt >= 0.2 {
                 let s = if total_dl >= gb {
                     (total_dl - gb) as f64 / dt
                 } else {
@@ -584,11 +594,17 @@ impl DownloadManager {
                 task.speed = 0.0;
                 task.finished_at = Some(now_ms());
             }
+            if status != TaskStatus::Downloading {
+                task.speed = 0.0;
+            }
             if status == TaskStatus::Completed {
                 finished = Some(task.clone());
             }
         }
         drop(tasks);
+        if status != TaskStatus::Downloading {
+            self.clear_progress_sample(id);
+        }
         self.persist();
         self.notify_tasks();
         if let Some(t) = finished {

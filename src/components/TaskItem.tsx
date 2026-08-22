@@ -74,8 +74,7 @@ export default function TaskItem({ task }: Props) {
   const icon = fileIcon(task.filename);
   const st = STATUS_STYLE[task.status] ?? STATUS_STYLE.Queued;
   const live = useLiveProgress(task, refreshedAt);
-  const progress =
-    task.total_size && task.total_size > 0 ? live.downloaded / task.total_size : null;
+  const progress = normalizeProgress(live.downloaded, task.total_size);
   const remaining = task.total_size ? Math.max(0, task.total_size - live.downloaded) : 0;
 
   const handlePause = async () => {
@@ -256,6 +255,13 @@ function useLiveProgress(task: DownloadTask, refreshedAt: number) {
   }
 
   return { downloaded: value, speed: task.speed };
+}
+
+function normalizeProgress(downloaded: number, totalSize: number | null): number | null {
+  if (!Number.isFinite(downloaded) || !Number.isFinite(totalSize) || !totalSize || totalSize <= 0) {
+    return null;
+  }
+  return Math.min(1, Math.max(0, downloaded / totalSize));
 }
 
 function IconBtn({

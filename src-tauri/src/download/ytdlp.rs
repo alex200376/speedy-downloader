@@ -720,6 +720,10 @@ fn parse_yt_dlp_progress(line: &str) -> Option<(f64, Option<u64>, Option<f64>)> 
     }
     let percent_str = parts[0].trim();
     let percent = percent_str.trim_end_matches('%').parse::<f64>().ok()?;
+    if !percent.is_finite() {
+        return None;
+    }
+    let percent = percent.clamp(0.0, 100.0);
 
     let rest = parts[1..].join(" of ");
     // The 100% line uses "in" instead of "at":
@@ -814,6 +818,19 @@ mod tests {
         assert!((p - 100.0).abs() < 0.01);
         assert_eq!(t, Some((5.67 * 1024.0 * 1024.0) as u64));
         assert_eq!(s, Some(2.00 * 1024.0 * 1024.0));
+    }
+
+    #[test]
+    fn parse_progress_line_percent_clamped() {
+        let (p, t, s) = parse_yt_dlp_progress("[download] 123.4% of 12.34MiB at 1.00MiB/s ETA 00:00").unwrap();
+        assert!((p - 100.0).abs() < 0.01);
+        assert_eq!(t, Some((12.34 * 1024.0 * 1024.0) as u64));
+        assert_eq!(s, Some(1024.0 * 1024.0));
+    }
+
+    #[test]
+    fn parse_progress_line_percent_invalid() {
+        assert!(parse_yt_dlp_progress("[download] NaN% of 12.34MiB at 1.00MiB/s ETA 00:00").is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { chooseFolder, EXTENSION_DOWNLOAD_URL, getApiToken, getVideoToolsStatus, installVideoTools, isTauri, openExtensionsPage, openUrl, prepareExtension } from "../api";
+import { chooseFolder, EXTENSION_DOWNLOAD_URL, formatBytes, getApiToken, getVideoToolsStatus, installVideoTools, isTauri, openExtensionsPage, openUrl, prepareExtension } from "../api";
 import { useSettingsStore } from "../store/settingsStore";
 import { useToastStore } from "../store/toastStore";
 import type { Settings } from "../types";
@@ -18,16 +18,6 @@ interface InstallProgress {
   phase: string;
   downloaded: number;
   total: number | null;
-}
-
-function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return "…";
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
 interface Props {

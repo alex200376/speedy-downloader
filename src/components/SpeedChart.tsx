@@ -11,11 +11,12 @@ export default function SpeedChart({ speed }: { speed: number }) {
   const { t } = useTranslation();
   const [points, setPoints] = useState<Point[]>([]);
   const svgRef = useRef<SVGSVGElement>(null);
+  const safeSpeed = Number.isFinite(speed) && speed > 0 ? speed : 0;
 
   useEffect(() => {
     const now = Date.now();
-    setPoints((prev) => [...prev.slice(-59), { t: now, v: speed }]);
-  }, [speed]);
+    setPoints((prev) => [...prev.slice(-59), { t: now, v: safeSpeed }]);
+  }, [safeSpeed]);
 
   const W = 600;
   const H = 90;
@@ -39,7 +40,7 @@ export default function SpeedChart({ speed }: { speed: number }) {
         <div className="text-[13px] font-semibold text-[var(--text-2)]">{t("title.speed")}</div>
         <div className="flex items-baseline gap-1.5">
           <span className="text-lg font-bold tabular-nums text-[var(--accent)]">
-            {formatSpeed(speed)}
+            {formatSpeed(safeSpeed)}
           </span>
         </div>
       </div>
