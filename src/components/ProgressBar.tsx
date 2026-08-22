@@ -5,6 +5,7 @@ interface Props {
 
 export default function ProgressBar({ value, status }: Props) {
   const downloading = status === "Downloading";
+  const hasFiniteValue = typeof value === "number" && Number.isFinite(value);
 
   // Show indeterminate bar only when there's no determinate value AND the
   // task is still pending/active.  Completed/Error/Paused tasks always get a
@@ -13,7 +14,7 @@ export default function ProgressBar({ value, status }: Props) {
     status !== "Completed" &&
     status !== "Error" &&
     status !== "Paused" &&
-    (value === null || value === undefined || status === "Pending")
+    (!hasFiniteValue || status === "Pending")
   ) {
     return (
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--panel-2)]">
@@ -23,7 +24,7 @@ export default function ProgressBar({ value, status }: Props) {
   }
 
   // For completed tasks without a value, force 100%.
-  const pct = Math.min(1, Math.max(0, value ?? 1));
+  const pct = Math.min(1, Math.max(0, hasFiniteValue ? value : 1));
   const done = pct >= 1 || status === "Completed";
   const color = done
     ? "var(--green)"

@@ -339,8 +339,10 @@ async fn run_ytdlp_child(
             err_line = stderr_lines.next_line(), if !stderr_done => {
                 match err_line {
                     Ok(Some(ref l)) => {
-                        if l.starts_with("ERROR:") {
-                            let err_msg = l.strip_prefix("ERROR:").unwrap_or(l).trim().to_string();
+                        let cleaned = strip_ansi_escapes(l);
+                        let cleaned = cleaned.trim();
+                        if cleaned.starts_with("ERROR:") {
+                            let err_msg = cleaned.strip_prefix("ERROR:").unwrap_or(cleaned).trim().to_string();
                             captured_error = Some(err_msg);
                             let _ = child.kill().await;
                             break;
@@ -611,77 +613,124 @@ fn is_yt_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+fn strip_ansi_escapes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('[') => {
+                let _ = chars.next();
+                while let Some(ch) = chars.next() {
+                    if ('@'..='~').contains(&ch) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                let _ = chars.next();
+                let mut saw_esc = false;
+                while let Some(ch) = chars.next() {
+                    if ch == '\u{7}' {
+                        break;
+                    }
+                    if saw_esc && ch == '\\' {
+                        break;
+                    }
+                    saw_esc = ch == '\u{1b}';
+                }
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+
 fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &mut Instant) {
-    if let Some((percent, total, speed)) = parse_yt_dlp_progress(l) {
-        let downloaded = if let Some(total) = total {
-            (percent / 100.0 * total as f64) as u64
-        } else {
-            0
-        };
+    for raw in l.split('\r') {
+        let cleaned_owned = strip_ansi_escapes(raw);
+        let cleaned = cleaned_owned.trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        if let Some((percent, total, speed)) = parse_yt_dlp_progress(cleaned) {
+            {
+                let mut tasks = mgr.tasks.lock();
+                if let Some(t) = tasks.get_mut(tid) {
+                    if let Some(total) = total {
+                        // Keep the largest seen total size. Video downloads may run
+                        // in multiple passes (video/audio), each 0-100%.
+                        if t.total_size.map_or(true, |cur| total > cur) {
+                            t.total_size = Some(total);
+                        }
+                    }
+
+                    // Prefer parsed total, fall back to previously known total.
+                    if let Some(effective_total) = total.or(t.total_size) {
+                        let downloaded =
+                            ((percent.clamp(0.0, 100.0) / 100.0) * effective_total as f64) as u64;
+                        // Never move backwards for multi-stream passes.
+                        if downloaded > t.downloaded {
+                            t.downloaded = downloaded;
+                        }
+                    }
+
+                    // Always update speed — use parsed value or 0 for unknown.
+                    t.speed = speed.unwrap_or(0.0);
+                }
+            }
+            // Push a throttled snapshot so the UI updates in near-real-time instead
+            // of waiting for the fallback poll.
+            mgr.notify_tasks();
+            if last_persist.elapsed() > Duration::from_millis(500) {
+                mgr.persist();
+                *last_persist = Instant::now();
+            }
+        }
+
+        if cleaned.starts_with("[download] Destination:") {
+            if let Some(path) = cleaned.strip_prefix("[download] Destination:") {
+                let p = path.trim();
+                if let Some(name) = Path::new(p).file_name().and_then(|n| n.to_str()) {
+                    let mut tasks = mgr.tasks.lock();
+                    if let Some(t) = tasks.get_mut(tid) {
+                        t.filename = name.to_string();
+                        t.file_path = p.to_string();
+                    }
+                }
+                mgr.notify_tasks();
+            }
+        }
+        if cleaned.starts_with("[Merger] Merging formats into") {
+            if let Some(path) = cleaned.strip_prefix("[Merger] Merging formats into") {
+                let p = path.trim().trim_matches('"');
+                if let Some(name) = Path::new(p).file_name().and_then(|n| n.to_str()) {
+                    let mut tasks = mgr.tasks.lock();
+                    if let Some(t) = tasks.get_mut(tid) {
+                        t.filename = name.to_string();
+                        t.file_path = p.to_string();
+                    }
+                }
+                mgr.notify_tasks();
+            }
+        }
+        if cleaned.starts_with("[download] 100% of") || cleaned.starts_with("[download] 100.0% of")
         {
             let mut tasks = mgr.tasks.lock();
             if let Some(t) = tasks.get_mut(tid) {
-                if let Some(total) = total {
-                    let prev_total = t.total_size;
-                    // Keep the largest seen total size. Video downloads run in
-                    // two passes (video then audio), each 0-100%, so the second
-                    // pass has a smaller total; never shrink the bar.
-                    if prev_total.map_or(true, |cur| total > cur) {
-                        t.total_size = Some(total);
-                    }
-                    // Detect new pass: if total size drops significantly (new
-                    // pass started), reset downloaded to current position.
-                    // Otherwise only advance forward to avoid flicker.
-                    let new_pass = prev_total.map_or(false, |old| total < old / 2);
-                    if new_pass || downloaded > t.downloaded {
-                        t.downloaded = downloaded;
-                    }
-                }
-                // Always update speed — use the parsed value or fall back to 0
-                // so the UI never shows stale speed data.
-                t.speed = speed.unwrap_or(0.0);
+                t.downloaded = t.total_size.unwrap_or(t.downloaded);
+                t.speed = 0.0;
             }
-        }
-        // Push a throttled snapshot so the UI updates in near-real-time instead
-        // of waiting for the fallback poll.
-        mgr.notify_tasks();
-        if last_persist.elapsed() > Duration::from_millis(500) {
             mgr.persist();
-            *last_persist = Instant::now();
+            mgr.notify_tasks();
         }
-    }
-    if l.starts_with("[download] Destination:") {
-        if let Some(path) = l.strip_prefix("[download] Destination:") {
-            let p = path.trim();
-            if let Some(name) = Path::new(p).file_name().and_then(|n| n.to_str()) {
-                let mut tasks = mgr.tasks.lock();
-                if let Some(t) = tasks.get_mut(tid) {
-                    t.filename = name.to_string();
-                    t.file_path = p.to_string();
-                }
-            }
-        }
-    }
-    if l.starts_with("[Merger] Merging formats into") {
-        if let Some(path) = l.strip_prefix("[Merger] Merging formats into") {
-            let p = path.trim().trim_matches('"');
-            if let Some(name) = Path::new(p).file_name().and_then(|n| n.to_str()) {
-                let mut tasks = mgr.tasks.lock();
-                if let Some(t) = tasks.get_mut(tid) {
-                    t.filename = name.to_string();
-                    t.file_path = p.to_string();
-                }
-            }
-        }
-    }
-    if l.starts_with("[download] 100% of") || l.starts_with("[download] 100.0% of") {
-        let mut tasks = mgr.tasks.lock();
-        if let Some(t) = tasks.get_mut(tid) {
-            t.downloaded = t.total_size.unwrap_or(t.downloaded);
-            t.speed = 0.0;
-        }
-        mgr.persist();
-        mgr.notify_tasks();
     }
 }
 
@@ -701,41 +750,59 @@ fn quality_to_format(quality: &str) -> &'static str {
 }
 
 fn parse_yt_dlp_progress(line: &str) -> Option<(f64, Option<u64>, Option<f64>)> {
-    let line = line.trim();
+    let cleaned_owned = strip_ansi_escapes(line);
+    let line = cleaned_owned.split('\r').last().unwrap_or("").trim();
     if !line.starts_with("[download]") {
         return None;
     }
     let body = line[11..].trim();
     if body.starts_with("Destination:")
-        || body.starts_with("Downloading video")
+        || body.starts_with("Downloading")
         || body.starts_with("Merging")
         || body.starts_with("Extracting")
     {
         return None;
     }
 
-    let parts = body.split(" of ").collect::<Vec<_>>();
-    if parts.len() < 2 {
+    let (percent_str, after_percent) = body.split_once('%')?;
+    let percent = percent_str.trim().parse::<f64>().ok()?;
+
+    let mut rest = after_percent.trim_start();
+    if let Some(stripped) = rest.strip_prefix("of") {
+        rest = stripped.trim_start();
+    } else {
         return None;
     }
-    let percent_str = parts[0].trim();
-    let percent = percent_str.trim_end_matches('%').parse::<f64>().ok()?;
+    let tokens = rest.split_whitespace().collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
 
-    let rest = parts[1..].join(" of ");
-    // The 100% line uses "in" instead of "at":
-    //   [download] 100% of 12.34MiB in 00:05
-    // Normal lines use "at":
-    //   [download]  45.3% of 12.34MiB at 1.23MiB/s ETA 00:05
-    let total_str = rest.split(" at ").next()
-        .and_then(|s| s.split(" in ").next())
-        .map(str::trim)?;
-    let total = parse_byte_size(total_str).map(|f| f as u64);
+    let total = parse_byte_size(tokens[0]).map(|f| f as u64);
 
-    let speed = rest
-        .split(" at ")
-        .nth(1)
-        .and_then(|s| s.split(" ETA ").next().map(str::trim))
-        .and_then(parse_byte_size);
+    let speed = if let Some(idx) = tokens
+        .iter()
+        .position(|tok| tok.eq_ignore_ascii_case("at"))
+    {
+        if idx + 1 >= tokens.len() {
+            None
+        } else {
+            let first = tokens[idx + 1];
+            if first.eq_ignore_ascii_case("unknown") || first.eq_ignore_ascii_case("n/a") {
+                None
+            } else {
+                parse_byte_size(first).or_else(|| {
+                    if idx + 2 < tokens.len() && !tokens[idx + 2].eq_ignore_ascii_case("ETA") {
+                        parse_byte_size(&format!("{}{}", first, tokens[idx + 2]))
+                    } else {
+                        None
+                    }
+                })
+            }
+        }
+    } else {
+        None
+    };
 
     Some((percent, total, speed))
 }
@@ -747,6 +814,8 @@ fn parse_byte_size(s: &str) -> Option<f64> {
     for c in s.chars() {
         if c.is_ascii_digit() || c == '.' {
             num.push(c);
+        } else if c == ',' {
+            continue;
         } else {
             unit.push(c);
         }
@@ -754,7 +823,7 @@ fn parse_byte_size(s: &str) -> Option<f64> {
     let n: f64 = num.parse().ok()?;
     let unit = unit.trim().trim_end_matches("/s");
     let multiplier = match unit {
-        "B" => 1.0,
+        "B" | "bytes" => 1.0,
         "KiB" | "KB" => 1024.0,
         "MiB" | "MB" => 1024.0 * 1024.0,
         "GiB" | "GB" => 1024.0 * 1024.0 * 1024.0,
@@ -814,6 +883,33 @@ mod tests {
         assert!((p - 100.0).abs() < 0.01);
         assert_eq!(t, Some((5.67 * 1024.0 * 1024.0) as u64));
         assert_eq!(s, Some(2.00 * 1024.0 * 1024.0));
+    }
+
+    #[test]
+    fn parse_progress_line_with_ansi_and_carriage_return() {
+        let line = "\u{1b}[0;94m[download]\u{1b}[0m   4.3% of ~12.34MiB at  1.23MiB/s ETA 00:09\r";
+        let (p, t, s) = parse_yt_dlp_progress(line).unwrap();
+        assert!((p - 4.3).abs() < 0.01);
+        assert_eq!(t, Some((12.34 * 1024.0 * 1024.0) as u64));
+        assert_eq!(s, Some(1.23 * 1024.0 * 1024.0));
+    }
+
+    #[test]
+    fn parse_progress_line_unknown_speed() {
+        let (p, t, s) =
+            parse_yt_dlp_progress("[download] 67.1% of 3.00MiB at Unknown B/s ETA Unknown").unwrap();
+        assert!((p - 67.1).abs() < 0.01);
+        assert_eq!(t, Some((3.00 * 1024.0 * 1024.0) as u64));
+        assert_eq!(s, None);
+    }
+
+    #[test]
+    fn parse_progress_line_split_speed_unit() {
+        let (p, t, s) =
+            parse_yt_dlp_progress("[download] 8.0% of 10.00MiB at 1.20 MiB/s ETA 00:20").unwrap();
+        assert!((p - 8.0).abs() < 0.01);
+        assert_eq!(t, Some((10.00 * 1024.0 * 1024.0) as u64));
+        assert_eq!(s, Some(1.20 * 1024.0 * 1024.0));
     }
 
     #[test]

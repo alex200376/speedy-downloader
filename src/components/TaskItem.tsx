@@ -74,9 +74,11 @@ export default function TaskItem({ task }: Props) {
   const icon = fileIcon(task.filename);
   const st = STATUS_STYLE[task.status] ?? STATUS_STYLE.Queued;
   const live = useLiveProgress(task, refreshedAt);
-  const progress =
-    task.total_size && task.total_size > 0 ? live.downloaded / task.total_size : null;
-  const remaining = task.total_size ? Math.max(0, task.total_size - live.downloaded) : 0;
+  const totalSize = task.total_size && task.total_size > 0 ? task.total_size : null;
+  const downloaded = Number.isFinite(live.downloaded) && live.downloaded > 0 ? live.downloaded : 0;
+  const speed = Number.isFinite(live.speed) && live.speed > 0 ? live.speed : 0;
+  const progress = totalSize ? downloaded / totalSize : null;
+  const remaining = totalSize ? Math.max(0, totalSize - downloaded) : 0;
 
   const handlePause = async () => {
     const ok = await pauseTask(task.id);
@@ -137,8 +139,8 @@ export default function TaskItem({ task }: Props) {
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-[var(--text-2)]">
             <span className="tabular-nums">
-              {formatBytes(live.downloaded)}
-              {task.total_size ? ` / ${formatBytes(task.total_size)}` : ""}
+              {formatBytes(downloaded)}
+              {totalSize ? ` / ${formatBytes(totalSize)}` : ""}
             </span>
             {progress !== null && (
               <span className="font-semibold tabular-nums text-[var(--text-2)]">
@@ -147,12 +149,12 @@ export default function TaskItem({ task }: Props) {
             )}
             {active && (
               <span className="font-semibold tabular-nums text-[var(--accent)]">
-                {formatSpeed(live.speed)}
+                {formatSpeed(speed)}
               </span>
             )}
-            {active && task.total_size && (
+            {active && totalSize && (
               <span className="tabular-nums">
-                {t("title.eta")} {formatEta(remaining, live.speed)}
+                {t("title.eta")} {formatEta(remaining, speed)}
               </span>
             )}
 {task.status !== "Completed" && task.kind !== "video" && (
