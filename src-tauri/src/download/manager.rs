@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +22,7 @@ pub struct DownloadManager {
     progress_stats: Mutex<ProgressStats>,
     last_persist: Mutex<Instant>,
     last_event: Mutex<Option<Instant>>,
+       trailing_emit_pending: std::sync::atomic::AtomicBool,
     total_bytes: AtomicU64,
     id_counter: AtomicU64,
 }
@@ -121,6 +122,7 @@ impl DownloadManager {
             progress_stats: Mutex::default(),
             last_persist: Mutex::new(Instant::now()),
             last_event: Mutex::new(None),
+             trailing_emit_pending: std::sync::atomic::AtomicBool::new(false),
             total_bytes: AtomicU64::new(0),
             id_counter: AtomicU64::new(0),
         });
@@ -152,21 +154,51 @@ impl DownloadManager {
 
     /// Best-effort emit of the masked task list to the frontend, throttled so
     /// the frequent segment-progress updates don't flood the event channel.
-    pub fn notify_tasks(&self) {
-        let Some(app) = self.app.lock().clone() else { return };
-        {
-            let mut last = self.last_event.lock();
-            let now = Instant::now();
-            if let Some(t) = *last {
-                if now.duration_since(t) < Duration::from_millis(150) {
-                    return;
-                }
+pub fn notify_tasks(&self) {
+    let Some(app) = self.app.lock().clone() else { return };
+
+    let should_emit_now = {
+        let mut last = self.last_event.lock();
+        let now = Instant::now();
+        match *last {
+            Some(t) if now.duration_since(t) < Duration::from_millis(150) => false,
+            _ => {
+                *last = Some(now);
+                true
             }
-            *last = Some(now);
         }
+    };
+
+    if should_emit_now {
         let list: Vec<DownloadTask> = self.list().into_iter().map(|t| t.masked()).collect();
         let _ = app.emit("tasks-changed", list);
+        return;
     }
+
+    // Inside the throttle window: schedule one trailing emit instead of
+    // dropping this update. `app` (a `tauri::AppHandle`) is cheaply
+    // cloneable and Send, so the spawned task doesn't need `Arc<Self>` —
+    // it just re-reads the masked list from `self.tasks` after a short
+    // delay via the raw pointer-free approach below: we clone what we
+    // need (the task list) eagerly isn't correct either, since we want
+    // the LATEST list at emit time, not now. So instead we use the
+    // AppHandle's own state handle to fetch the manager again.
+    if self.trailing_emit_pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // a trailing emit is already scheduled
+    }
+
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        if let Some(state) = app_for_task.try_state::<Arc<DownloadManager>>() {
+            let mgr = state.inner();
+            mgr.trailing_emit_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+            *mgr.last_event.lock() = Some(Instant::now());
+            let list: Vec<DownloadTask> = mgr.list().into_iter().map(|t| t.masked()).collect();
+            let _ = app_for_task.emit("tasks-changed", list);
+        }
+    });
+}
 
     pub(crate) fn persist(&self) {
         let tasks: Vec<DownloadTask> = self.tasks.lock().values().cloned().collect();

@@ -233,6 +233,13 @@ fn needs_cookies_retry(err_msg: &str) -> bool {
         || lower.contains("login")
         || lower.contains("not authorized")
         || lower.contains("could not find video")
+        || lower.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("unavailable")
+        || lower.contains("private")
+        || lower.contains("age")
+        || lower.contains("unable to extract")
+        || lower.contains("extraction")
 }
 
 /// Build the yt-dlp argument list.
@@ -251,12 +258,17 @@ fn build_ytdlp_args(
     let output_template = format!("{}\\%(title).120B [%(id)s].%(ext)s", save_dir);
     let mut args: Vec<String> = vec![
         "--newline".into(),
+              "--no-playlist".into(),
         "-o".into(),
         output_template,
         "-f".into(),
         format_selector.into(),
         "-N".into(),
-        "4".into(),
+        "2".into(),
+        "--fragment-retries".into(),
+        "20".into(),
+        "--retry-sleep".into(),
+        "fragment:3".into(),
     ];
 
     if let Some(ff) = ffmpeg_path {
@@ -308,6 +320,7 @@ async fn run_ytdlp_child(
 ) -> Result<(), String> {
     let mut child = TokioCommand::new(ytdlp_path(data_dir))
         .args(&args)
+        .env("PYTHONUNBUFFERED", "1")
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .creation_flags(0x08000000)
@@ -510,6 +523,7 @@ fn finish_ytdlp_task(mgr: &DownloadManager, id: &str) {
         if let Some(t) = tasks.get_mut(id) {
             let save = t.save_dir.clone();
             let url_id = extract_video_id(&t.url);
+            let has_yt_id = !url_id.is_empty();
             if let Ok(entries) = std::fs::read_dir(&save) {
                 let mut best: Option<(String, u64)> = None;
                 for entry in entries.flatten() {
@@ -527,17 +541,38 @@ fn finish_ytdlp_task(mgr: &DownloadManager, id: &str) {
                         || name_lower.ends_with(".webm")
                         || name_lower.ends_with(".m4a")
                         || name_lower.ends_with(".mp3")
-                        || name_lower.ends_with(".ogg");
+                        || name_lower.ends_with(".ogg")
+                        || name_lower.ends_with(".opus")
+                        || name_lower.ends_with(".flac")
+                        || name_lower.ends_with(".wav")
+                        || name_lower.ends_with(".aac")
+                        || name_lower.ends_with(".avi")
+                        || name_lower.ends_with(".mov")
+                        || name_lower.ends_with(".flv")
+                        || name_lower.ends_with(".ts")
+                        || name_lower.ends_with(".m4v")
+                        || name_lower.ends_with(".3gp");
                     if !ext_ok {
                         continue;
                     }
-                    let score = if !url_id.is_empty() && name.contains(url_id.as_str()) {
+                    let score = if has_yt_id && name.contains(url_id.as_str()) {
                         2
                     } else {
-                        1
+                        0
                     };
-                    let prev_score = best.as_ref().map(|b| if b.0.contains(url_id.as_str()) { 2 } else { 1 }).unwrap_or(0);
-                    if score > prev_score || (score == prev_score && meta.len() > best.as_ref().map(|b| b.1).unwrap_or(0)) {
+                    let prev_score = best.as_ref().map(|b| if b.0.contains(url_id.as_str()) { 2 } else { 0 }).unwrap_or(0);
+                    // For non-YouTube URLs, pick the most recently modified file.
+                    let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+                    let prev_mtime = best.as_ref().and_then(|(bp, _)| std::fs::metadata(bp).ok())
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs()).unwrap_or(0);
+                    let beats = if !has_yt_id {
+                        score > prev_score || (score == prev_score && mtime >= prev_mtime)
+                    } else {
+                        score > prev_score || (score == prev_score && meta.len() > best.as_ref().map(|b| b.1).unwrap_or(0))
+                    };
+                    if beats {
                         best = Some((entry.path().to_string_lossy().to_string(), meta.len()));
                     }
                 }
@@ -735,17 +770,16 @@ fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
 }
 
 fn quality_to_format(quality: &str) -> &'static str {
-    // Prefer mp4/m4a containers for better compatibility, fall back to any format.
     match quality {
-        "best" => "bv[ext=mp4]+ba[ext=m4a]/bv[ext=mp4]+ba/bv+ba/b",
-        "video" => "bv[ext=mp4]/bv",
-        "audio" => "ba[ext=m4a]/ba",
-        "2160p" => "bv[height<=2160][ext=mp4]+ba[ext=m4a]/bv[height<=2160]+ba/b",
-        "1080p" => "bv[height<=1080][ext=mp4]+ba[ext=m4a]/bv[height<=1080]+ba/b",
-        "720p" => "bv[height<=720][ext=mp4]+ba[ext=m4a]/bv[height<=720]+ba/b",
-        "480p" => "bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480]+ba/b",
-        "360p" => "bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360]+ba/b",
-        _ => "bv[ext=mp4]+ba[ext=m4a]/bv+ba/b",
+        "best" => "bv[ext=mp4]+ba[ext=m4a]/bv[ext=mp4]+ba/bv[ext=webm]+ba[ext=webm]/bv+ba/b",
+        "video" => "bv[ext=mp4]/bv[ext=webm]/bv",
+        "audio" => "ba[ext=m4a]/ba[ext=webm]/ba",
+        "2160p" => "bv[height<=2160][ext=mp4]+ba[ext=m4a]/bv[height<=2160][ext=webm]+ba[ext=webm]/bv[height<=2160]+ba/b",
+        "1080p" => "bv[height<=1080][ext=mp4]+ba[ext=m4a]/bv[height<=1080][ext=webm]+ba[ext=webm]/bv[height<=1080]+ba/b",
+        "720p" => "bv[height<=720][ext=mp4]+ba[ext=m4a]/bv[height<=720][ext=webm]+ba[ext=webm]/bv[height<=720]+ba/b",
+        "480p" => "bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480][ext=webm]+ba[ext=webm]/bv[height<=480]+ba/b",
+        "360p" => "bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360][ext=webm]+ba[ext=webm]/bv[height<=360]+ba/b",
+        _ => "bv+ba/b",
     }
 }
 
