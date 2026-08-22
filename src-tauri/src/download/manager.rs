@@ -559,19 +559,31 @@ impl DownloadManager {
         };
         self.total_bytes.store(total_dl, Ordering::Relaxed);
         drop(stats);
-        let mut should_persist = false;
-        {
+        // Clean up completed/failed/canceled tasks from per_task to prevent memory leak
+        let should_persist = {
             let mut last = self.last_persist.lock();
             if now.duration_since(*last) >= Duration::from_secs(2) {
                 *last = now;
-                should_persist = true;
+                true
+            } else {
+                false
             }
-        }
-        drop(tasks);
+        };
         if should_persist {
             self.persist();
         }
         self.notify_tasks();
+        
+        // Clean up completed/failed/canceled tasks from per_task to prevent memory leak
+        let mut stats = self.progress_stats.lock();
+        stats.per_task.retain(|task_id, _| {
+            if let Some(task) = self.tasks.lock().get(task_id) {
+                matches!(task.status, TaskStatus::Downloading | TaskStatus::Queued | TaskStatus::Paused)
+            } else {
+                false
+            }
+        });
+        drop(stats);
     }
 
     pub fn set_status(&self, id: &str, status: TaskStatus, error: Option<String>) {

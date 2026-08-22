@@ -370,7 +370,8 @@ export function formatBytes(n: number): string {
 }
 
 export function formatSpeed(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "0 KB/s";
+  if (!Number.isFinite(n)) return "— KB/s";
+  if (n <= 0) return "0 KB/s";
   return `${formatBytes(n)}/s`;
 }
 

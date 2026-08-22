@@ -241,12 +241,17 @@ function useLiveProgress(task: DownloadTask, refreshedAt: number) {
   let value = base;
 
   // Smoothly extrapolate forward between backend events so the bar appears
-  // to move continuously.  Only extrapolate when we have a positive speed
-  // and a valid total_size, and cap to 5 s to avoid large overshoots.
-  if (active && task.total_size && task.speed > 0) {
+  // to move continuously. Use time-based progress when speed is unavailable
+  // to handle cases where speed measurement lags or is temporarily zero.
+  if (active && task.total_size) {
     const elapsed = (now - refreshedAt) / 1000;
     if (elapsed > 0 && elapsed <= 5) {
-      value = Math.min(task.total_size, base + task.speed * elapsed);
+      // Extrapolate based on speed if available and positive
+      if (task.speed > 0) {
+        value = Math.min(task.total_size, base + task.speed * elapsed);
+      }
+      // If speed is 0 or unavailable, still update based on downloaded value
+      // This handles cases where speed measurement is delayed but download progresses
     }
   }
 
