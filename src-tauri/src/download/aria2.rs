@@ -272,11 +272,20 @@ pub async fn run_aria2_task(
         args.push(format!("--max-overall-download-limit={}K", limit_kbps));
     }
 
-    // For magnet links, add BT-specific options
-    if url.starts_with("magnet:") {
-        args.push("--bt-enable-lpd=true".into());
+    // For magnet links and .torrent files, add BT-specific options
+    let is_bt = url.starts_with("magnet:") || url.ends_with(".torrent");
+    if is_bt {
         args.push("--enable-dht=true".into());
-        args.push("--bt-tracker=udp://tracker.opentrackr.org:1337/announce,udp://open.stealth.si:80/announce,udp://tracker.torrent.eu.org:451/announce".into());
+        args.push("--bt-enable-lpd=true".into());
+        args.push("--bt-tracker=udp://tracker.opentrackr.org:1337/announce,udp://open.stealth.si:80/announce,udp://tracker.torrent.eu.org:451/announce,udp://exodus.desync.com:6969/announce,udp://tracker.moeking.me:6969/announce".into());
+        args.push("--seed-time=0".into());
+        args.push("--bt-stop-timeout=300".into());
+    }
+
+    // For .torrent URLs, tell aria2 to process as BT
+    if url.ends_with(".torrent") {
+        args.push("--bt-metadata-only=false".into());
+        args.push("--bt-save-metadata=true".into());
     }
 
     args.push(url.clone());
@@ -346,7 +355,7 @@ async fn run_aria2_child(
             err_line = stderr_lines.next_line(), if !stderr_done => {
                 match err_line {
                     Ok(Some(ref l)) => {
-                        if l.contains("ERROR") || l.contains("error:") {
+                        if l.starts_with("ERROR") && captured_error.is_none() {
                             captured_error = Some(l.trim().to_string());
                         }
                         process_aria2_line(l, mgr, tid, &mut last_persist);
@@ -377,6 +386,7 @@ async fn run_aria2_child(
 }
 
 fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &mut Instant) {
+    let mut updated = false;
     // aria2 progress format: [#abc123 4.5MiB/12MiB(37%) CN:12 DL:1.2MiB/s]
     if let Some(bracket_start) = l.find('[') {
         if let Some(bracket_end) = l.find(']') {
@@ -402,6 +412,7 @@ fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
                                     t.total_size = Some(total);
                                 }
                                 t.downloaded = downloaded;
+                                updated = true;
                             }
                         }
                     }
@@ -415,6 +426,7 @@ fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
                         let mut tasks = mgr.tasks.lock();
                         if let Some(t) = tasks.get_mut(tid) {
                             t.speed = speed as f64;
+                            updated = true;
                         }
                     }
                 }
@@ -435,9 +447,14 @@ fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
                 if let Some(t) = tasks.get_mut(tid) {
                     t.filename = name.to_string();
                     t.file_path = path_part.to_string();
+                    updated = true;
                 }
             }
         }
+    }
+
+    if updated {
+        mgr.notify_tasks();
     }
 }
 
@@ -468,30 +485,38 @@ fn finish_aria2_task(mgr: &DownloadManager, id: &str) {
     {
         let mut tasks = mgr.tasks.lock();
         if let Some(t) = tasks.get_mut(id) {
-            if t.total_size.is_none() {
-                let save = t.save_dir.clone();
-                if let Ok(entries) = std::fs::read_dir(&save) {
-                    let mut best: Option<(String, u64)> = None;
-                    for entry in entries.flatten() {
-                        let meta = match entry.metadata() {
-                            Ok(m) => m,
-                            Err(_) => continue,
-                        };
-                        if !meta.is_file() {
-                            continue;
-                        }
-                        if meta.len() > best.as_ref().map(|b| b.1).unwrap_or(0) {
-                            best = Some((entry.path().to_string_lossy().to_string(), meta.len()));
-                        }
+            // Always try to find the actual output file for accurate size
+            let save = t.save_dir.clone();
+            if let Ok(entries) = std::fs::read_dir(&save) {
+                let mut best: Option<(String, u64)> = None;
+                for entry in entries.flatten() {
+                    let meta = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    if !meta.is_file() {
+                        continue;
                     }
-                    if let Some((path, size)) = best {
-                        t.total_size = Some(size);
-                        t.downloaded = size;
-                        if let Some(name) = Path::new(&path).file_name().and_then(|n| n.to_str()) {
-                            t.filename = name.to_string();
-                        }
-                        t.file_path = path;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let name_lower = name.to_lowercase();
+                    // Skip .torrent metadata files and temp files
+                    if name_lower.ends_with(".torrent")
+                        || name_lower.starts_with(".")
+                        || name_lower.ends_with(".aria2")
+                    {
+                        continue;
                     }
+                    if meta.len() > best.as_ref().map(|b| b.1).unwrap_or(0) {
+                        best = Some((entry.path().to_string_lossy().to_string(), meta.len()));
+                    }
+                }
+                if let Some((path, size)) = best {
+                    t.total_size = Some(size);
+                    t.downloaded = size;
+                    if let Some(name) = Path::new(&path).file_name().and_then(|n| n.to_str()) {
+                        t.filename = name.to_string();
+                    }
+                    t.file_path = path;
                 }
             }
             if t.status == TaskStatus::Downloading {
@@ -504,8 +529,8 @@ fn finish_aria2_task(mgr: &DownloadManager, id: &str) {
             }
         }
     }
-    drop(mgr.tasks.lock());
     mgr.persist();
+    mgr.notify_tasks();
     if let Some(t) = mgr.get(id) {
         mgr.on_completed(&t);
     }
