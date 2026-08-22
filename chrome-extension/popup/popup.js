@@ -120,7 +120,8 @@ function statusLabel(s) {
 }
 
 function formatBytes(n) {
-  if (!n || n <= 0) return "\u2014";
+  if (!Number.isFinite(n) || n < 0) return "\u2014";
+  if (n < 1024) return Math.round(n) + " B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = n, i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }

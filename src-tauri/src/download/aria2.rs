@@ -395,13 +395,15 @@ fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
 
                     let percent_str = &rest[paren_pos + 1..];
                     if let Some(end) = percent_str.find(')') {
-                        if let Ok(_percent) = percent_str[..end].trim().parse::<f64>() {
+                        if parse_aria2_percent(&percent_str[..end]).is_some() {
                             let mut tasks = mgr.tasks.lock();
                             if let Some(t) = tasks.get_mut(tid) {
                                 if total > 0 {
                                     t.total_size = Some(total);
+                                    t.downloaded = downloaded.min(total);
+                                } else {
+                                    t.downloaded = downloaded;
                                 }
-                                t.downloaded = downloaded;
                             }
                         }
                     }
@@ -424,6 +426,7 @@ fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
                 mgr.persist();
                 *last_persist = Instant::now();
             }
+            mgr.notify_tasks();
         }
     }
 
@@ -439,6 +442,14 @@ fn process_aria2_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
             }
         }
     }
+}
+
+fn parse_aria2_percent(s: &str) -> Option<f64> {
+    let p = s.trim().trim_end_matches('%').parse::<f64>().ok()?;
+    if !p.is_finite() {
+        return None;
+    }
+    Some(p.clamp(0.0, 100.0))
 }
 
 fn parse_aria2_size(s: &str) -> u64 {
@@ -530,5 +541,13 @@ mod tests {
         assert_eq!(parse_aria2_size("1.5KiB"), 1536);
         assert_eq!(parse_aria2_size("10.5MiB"), (10.5 * 1024.0 * 1024.0) as u64);
         assert_eq!(parse_aria2_size("1.2GiB"), (1.2 * 1024.0 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn parse_aria2_percent_values() {
+        assert_eq!(parse_aria2_percent("37%"), Some(37.0));
+        assert_eq!(parse_aria2_percent(" 120% "), Some(100.0));
+        assert_eq!(parse_aria2_percent("-5%"), Some(0.0));
+        assert_eq!(parse_aria2_percent("NaN%"), None);
     }
 }

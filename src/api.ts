@@ -358,7 +358,7 @@ export async function installVideoTools(): Promise<VideoToolsStatus | null> {
 
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "—";
-  if (n < 1024) return `${n} B`;
+  if (n < 1024) return `${Math.round(n)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let v = n / 1024;
   let i = 0;
@@ -370,7 +370,7 @@ export function formatBytes(n: number): string {
 }
 
 export function formatSpeed(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "0 KB/s";
+  if (!Number.isFinite(n) || n <= 0) return "0 B/s";
   return `${formatBytes(n)}/s`;
 }
 
