@@ -291,11 +291,7 @@ async fn detect_extension(
 }
 
 pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
-    let sem = manager.semaphore();
-    let _permit = match sem.acquire_owned().await {
-        Ok(p) => p,
-        Err(_) => return,
-    };
+    let _permit = manager.gate().acquire_owned().await;
 
     let task = match manager.get(&id) {
         Some(t) => t,
@@ -304,6 +300,11 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
 
     if task.kind == "video" {
         ytdlp::run_ytdlp_task(manager, id, task.url, task.quality.clone()).await;
+        return;
+    }
+
+    if super::aria2::is_magnet_or_torrent(&task.url) {
+        super::aria2::run_aria2_task(manager, id, task.url).await;
         return;
     }
 

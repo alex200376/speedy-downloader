@@ -14,11 +14,14 @@ import {
   ClockIcon,
   CheckIcon,
   AlertIcon,
+  PlaylistIcon,
 } from "./icons";
 
 interface Props {
+  collapsed?: boolean;
   onNew: () => void;
   onSettings: () => void;
+  onPlaylist: () => void;
 }
 
 const FILTER_ICONS: Record<FilterKey, ReactNode> = {
@@ -29,7 +32,7 @@ const FILTER_ICONS: Record<FilterKey, ReactNode> = {
   error: <AlertIcon width={17} height={17} />,
 };
 
-export default function Sidebar({ onNew, onSettings }: Props) {
+export default function Sidebar({ collapsed, onNew, onSettings, onPlaylist }: Props) {
   const { t, i18n } = useTranslation();
   const { filter, setFilter } = useTaskStore();
   const stats = useTaskStats();
@@ -57,6 +60,59 @@ export default function Sidebar({ onNew, onSettings }: Props) {
     { key: "error", count: stats.error },
   ];
 
+  if (collapsed) {
+    return (
+      <aside className="flex h-full w-[52px] shrink-0 flex-col items-center border-r border-[var(--border-soft)] bg-[var(--bg-2)]/60 py-3 gap-2">
+        <button
+          onClick={onNew}
+          title={t("header.newDownload")}
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--accent)] text-[var(--bg)] transition hover:brightness-110"
+        >
+          <PlusIcon width={16} height={16} />
+        </button>
+
+        <button
+          onClick={onPlaylist}
+          title={t("header.playlist") || "Playlist"}
+          className="icon-btn"
+        >
+          <PlaylistIcon width={17} height={17} />
+        </button>
+
+        <div className="my-1 h-px w-6 bg-[var(--border)]" />
+
+        <nav className="flex flex-col items-center gap-1">
+          {items.map((item) => (
+            <button
+              key={item.key}
+              onClick={() => setFilter(item.key)}
+              title={`${t(`nav.${item.key}`)}${item.count > 0 ? ` (${item.count})` : ""}`}
+              className={`flex h-9 w-9 items-center justify-center rounded-md transition ${
+                filter === item.key
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "text-[var(--text-2)] hover:bg-[var(--panel)] hover:text-[var(--text)]"
+              }`}
+            >
+              {FILTER_ICONS[item.key]}
+            </button>
+          ))}
+        </nav>
+
+        <div className="mt-auto flex flex-col items-center gap-1">
+          <button onClick={toggleTheme} title="Toggle theme" className="icon-btn">
+            {theme === "dark" ? <SunIcon width={17} height={17} /> : <MoonIcon width={17} height={17} />}
+          </button>
+          <button onClick={toggleLanguage} title="Language / 语言" className="icon-btn">
+            <GlobeIcon width={15} height={15} />
+          </button>
+          <button onClick={onSettings} title={t("settings.title")} className="icon-btn">
+            <SettingsIcon width={17} height={17} />
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-[var(--border-soft)] bg-[var(--bg-2)]/60">
       <div className="flex items-center gap-2.5 px-5 pt-5 pb-4">
@@ -68,10 +124,14 @@ export default function Sidebar({ onNew, onSettings }: Props) {
         </div>
       </div>
 
-      <div className="px-3 pb-2">
+      <div className="px-3 pb-2 space-y-2">
         <button onClick={onNew} className="btn btn-primary w-full">
           <PlusIcon width={15} height={15} />
           {t("header.newDownload")}
+        </button>
+        <button onClick={onPlaylist} className="btn btn-outline w-full">
+          <PlaylistIcon width={15} height={15} />
+          {t("header.playlist") || "Playlist"}
         </button>
       </div>
 

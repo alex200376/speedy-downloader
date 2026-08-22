@@ -2,6 +2,19 @@ const API_BASE = "http://127.0.0.1:47812";
 
 const zh = (navigator.language || "").toLowerCase().startsWith("zh");
 
+// Per-install API auth token. Populated from chrome.storage.sync at startup and
+// via the popup (SD_SET_TOKEN). Sent as Authorization: Bearer on every request.
+let apiToken = "";
+chrome.storage.sync.get(["apiToken"]).then((s) => {
+  apiToken = (s && s.apiToken) || "";
+});
+
+function apiFetch(url, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (apiToken) headers["Authorization"] = `Bearer ${apiToken}`;
+  return fetch(url, Object.assign({}, opts, { headers }));
+}
+
 function notify(message) {
   try {
     chrome.notifications.create({
@@ -15,14 +28,14 @@ function notify(message) {
 }
 
 function health() {
-  return fetch(`${API_BASE}/api/v1/health`, { cache: "no-store" })
+  return apiFetch(`${API_BASE}/api/v1/health`, { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => (j && j.ok ? j.data : null))
     .catch(() => null);
 }
 
 function sendToApp(url, filename, referer, confirm, kind) {
-  return fetch(`${API_BASE}/api/v1/tasks`, {
+  return apiFetch(`${API_BASE}/api/v1/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url, filename, referer, confirm, kind }),
@@ -62,7 +75,7 @@ async function updateBadge() {
 }
 
 function existingTask(url) {
-  return fetch(`${API_BASE}/api/v1/tasks`, { cache: "no-store" })
+  return apiFetch(`${API_BASE}/api/v1/tasks`, { cache: "no-store" })
     .then((r) => r.json())
     .then((j) => {
       if (!j || !j.ok || !j.data) return null;
@@ -71,10 +84,28 @@ function existingTask(url) {
     .catch(() => null);
 }
 
+const VIDEO_HOSTS = [
+  "youtube.com", "youtu.be", "twitter.com", "x.com",
+  "bilibili.com", "tiktok.com", "instagram.com", "facebook.com",
+  "vimeo.com", "dailymotion.com", "twitch.tv", "reddit.com",
+  "douyin.com", "v.qq.com", "iqiyi.com", "youku.com",
+];
+
+function isVideoSite(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    return VIDEO_HOSTS.some((h) => host === h || host.endsWith("." + h));
+  } catch {
+    return false;
+  }
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
   const { autoGrab = true } = await chrome.storage.sync.get("autoGrab");
   if (!autoGrab) return;
-  if (!item.url || !/^https?:\/\//i.test(item.url)) return;
+  // Support magnet links and torrent files too
+  if (!item.url || (!/^https?:\/\//i.test(item.url) && !item.url.startsWith("magnet:") && !item.url.endsWith(".torrent"))) return;
   if (item.filename && /\.(crdownload|part)$/i.test(item.filename)) return;
 
   const dup = await existingTask(item.url);
@@ -92,7 +123,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
   } catch (e) {}
 
   const referer = item.referrer || undefined;
-  const result = await sendToApp(item.url, item.filename, referer, true, "http");
+  const kind = isVideoSite(item.url) ? "video" : "http";
+  const result = await sendToApp(item.url, item.filename, referer, true, kind);
 
   if (result && result.ok) {
     try {
@@ -112,6 +144,25 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   updateBadge();
 });
+
+function isPlaylistUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes("youtube.com") || u.hostname.includes("youtu.be")) {
+      return u.searchParams.has("list") || url.includes("/playlist") || url.includes("/channel/") || url.includes("/user/");
+    }
+    if (u.hostname.includes("bilibili.com")) {
+      return url.includes("/space/channel/seriesdetail") || url.includes("/list/");
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function isMagnetOrTorrent(url) {
+  return url.startsWith("magnet:") || url.endsWith(".torrent") || (url.includes("://") && url.includes(".torrent"));
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -134,6 +185,16 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Download video with SpeedDownloader",
     contexts: ["page"],
   });
+  chrome.contextMenus.create({
+    id: "sd-playlist",
+    title: "Download playlist with SpeedDownloader",
+    contexts: ["page"],
+  });
+  chrome.contextMenus.create({
+    id: "sd-magnet",
+    title: "Download with SpeedDownloader",
+    contexts: ["link"],
+  });
   updateBadge();
 });
 
@@ -144,6 +205,40 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!url) return;
   const referer = tab && tab.url ? tab.url : undefined;
   const filename = filenameFromUrl(url);
+
+  // Playlist detection
+  if (info.menuItemId === "sd-playlist") {
+    if (isPlaylistUrl(url)) {
+      apiFetch(`${API_BASE}/api/v1/playlist/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      })
+        .then((r) => r.json())
+        .then((j) => {
+          if (j && j.ok) {
+            updateBadge();
+            notify(zh ? `播放列表已发送到极速下载器` : `Playlist sent to SpeedDownloader`);
+          } else {
+            notify(zh ? `未能打开播放列表` : `Failed to open playlist`);
+          }
+        })
+        .catch(() => notify(zh ? `极速下载器未运行` : `App is not running`));
+    } else {
+      notify(zh ? `此页面不是播放列表` : `This page is not a playlist`);
+    }
+    return;
+  }
+
+  // Magnet link detection
+  if (info.menuItemId === "sd-magnet" || isMagnetOrTorrent(url)) {
+    sendToApp(url, filename || "torrent", referer, true, "http").then((r) => {
+      if (r && r.ok) updateBadge();
+      else if (r && r.error) notify(zh ? `未能添加下载：${r.error}` : `Failed to add download: ${r.error}`);
+    });
+    return;
+  }
+
   const kind = info.menuItemId === "sd-video-page" && tab ? "video" : "http";
   const targetUrl = kind === "video" && tab ? tab.url : url;
   sendToApp(targetUrl, filename, referer, true, kind).then((r) => {
@@ -155,14 +250,30 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
 
-  if (msg.type === "SD_GRAB" || msg.type === "SD_VIDEO_GRAB") {
-    const kind = msg.type === "SD_VIDEO_GRAB" ? "video" : "http";
-    const referer = msg.referer || (sender && sender.tab && sender.tab.url) || undefined;
-    sendToApp(msg.url, msg.filename, referer, true, kind).then((r) => {
-      sendResponse(r);
-      if (r && r.ok) updateBadge();
-      else if (r && r.error) notify(zh ? `未能添加下载：${r.error}` : `Failed to add download: ${r.error}`);
-    });
+if (msg.type === "SD_GRAB" || msg.type === "SD_VIDEO_GRAB" || msg.type === "SD_GRAB_MAGNET") {
+  const kind = msg.type === "SD_VIDEO_GRAB" ? "video" : "http";
+  const referer = msg.referer || (sender && sender.tab && sender.tab.url) || undefined;
+  sendToApp(msg.url, msg.filename, referer, true, kind).then((r) => {
+    sendResponse(r);
+    if (r && r.ok) updateBadge();
+    else if (r && r.error) notify(zh ? `未能添加下载：${r.error}` : `Failed to add download: ${r.error}`);
+  });
+  return true;
+}
+
+  if (msg.type === "SD_PLAYLIST_GRAB") {
+    // Open the playlist dialog in the app instead of creating a single task
+    apiFetch(`${API_BASE}/api/v1/playlist/open`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: msg.url }),
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        sendResponse(j && j.ok ? { ok: true } : { ok: false, error: j?.error || "failed" });
+        updateBadge();
+      })
+      .catch(() => sendResponse({ ok: false, error: "app offline" }));
     return true;
   }
 
@@ -171,8 +282,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "SD_SET_TOKEN") {
+    apiToken = (msg.token || "").trim();
+    chrome.storage.sync.set({ apiToken: apiToken });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (msg.type === "SD_TASKS") {
-    fetch(`${API_BASE}/api/v1/tasks`, { cache: "no-store" })
+    apiFetch(`${API_BASE}/api/v1/tasks`, { cache: "no-store" })
       .then((r) => r.json())
       .then((j) => sendResponse(j && j.ok ? (j.data || []) : []))
       .catch(() => sendResponse([]));

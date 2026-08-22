@@ -11,7 +11,7 @@ export default function Toasts() {
   const remove = useToastStore((s) => s.remove);
 
   return (
-    <div className="pointer-events-none fixed bottom-5 right-5 z-[100] flex w-80 flex-col gap-2">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[calc(100vw-2rem)] max-w-80 flex-col gap-2 sm:bottom-5 sm:right-5">
       {items.map((toast) => (
         <div
           key={toast.id}

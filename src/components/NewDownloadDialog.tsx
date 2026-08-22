@@ -15,22 +15,42 @@ interface Props {
 
 const VIDEO_QUALITIES = [
   { key: "best", label: "Best (video+audio)", labelZh: "最佳（视频+音频）" },
+  { key: "2160p", label: "4K (2160p)", labelZh: "4K (2160p)" },
   { key: "1080p", label: "1080p", labelZh: "1080p" },
   { key: "720p", label: "720p", labelZh: "720p" },
   { key: "480p", label: "480p", labelZh: "480p" },
+  { key: "360p", label: "360p", labelZh: "360p" },
   { key: "video", label: "Video only", labelZh: "仅视频" },
   { key: "audio", label: "Audio only", labelZh: "仅音频" },
 ] as const;
 
+const VIDEO_HOSTS = [
+  "youtube.com", "youtu.be",
+  "twitter.com", "x.com",
+  "bilibili.com",
+  "tiktok.com",
+  "instagram.com",
+  "facebook.com", "fb.watch",
+  "vimeo.com",
+  "dailymotion.com",
+  "twitch.tv",
+  "reddit.com", "redd.it",
+  "vk.com",
+  "ok.ru",
+  "nicovideo.jp", "nico.ms",
+  "douyin.com",
+  "ixigua.com",
+  "v.qq.com",
+  "iqiyi.com",
+  "youku.com",
+  "mgtv.com",
+];
+
 function isVideoHost(url: string): boolean {
   try {
-    let u = url.trim();
+    let u = url.trim().toLowerCase();
     if (!/^https?:\/\//i.test(u)) return false;
-    if (u.includes("://youtube.com") || u.includes("://youtu.be")) return true;
-    if (u.includes("://twitter.com") || u.includes("://x.com")) return true;
-    if (u.includes("://bilibili.com")) return true;
-    if (u.includes("://tiktok.com")) return true;
-    return false;
+    return VIDEO_HOSTS.some((h) => u.includes("://" + h) || u.includes("www." + h));
   } catch {
     return false;
   }
@@ -47,6 +67,10 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
   const [segments, setSegments] = useState(8);
   const [referer, setReferer] = useState("");
   const [headersText, setHeadersText] = useState("");
+  const [writeSubs, setWriteSubs] = useState(false);
+  const [subLang, setSubLang] = useState("en");
+  const [availableSubs, setAvailableSubs] = useState<{ code: string; name: string; auto: boolean }[]>([]);
+  const [subsLoading, setSubsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -64,8 +88,34 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       setHeadersText("");
       setError("");
       setQuality("best");
+      setWriteSubs(false);
+      setSubLang("en");
+      setAvailableSubs([]);
     }
   }, [open, initialUrl, grab, settings]);
+
+  const detectSubtitles = async (videoUrl: string) => {
+    if (!videoUrl.trim() || subsLoading) return;
+    setSubsLoading(true);
+    try {
+      const result = await api.listSubtitles(videoUrl.trim());
+      if (result.subtitles && result.subtitles.length > 0) {
+        setAvailableSubs(result.subtitles);
+        // Auto-select first manual sub, or first auto sub if none manual
+        const manual = result.subtitles.find((s) => !s.auto);
+        if (manual) {
+          setSubLang(manual.code);
+          setWriteSubs(true);
+        }
+      } else {
+        setAvailableSubs([]);
+      }
+    } catch {
+      setAvailableSubs([]);
+    } finally {
+      setSubsLoading(false);
+    }
+  };
 
   if (!open) return null;
 
@@ -123,6 +173,8 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
         segments,
         headers,
         quality: isVideo ? quality : undefined,
+        write_subs: isVideo && writeSubs,
+        sub_lang: isVideo && writeSubs ? subLang : undefined,
       });
       setBusy(false);
       if (task) {
@@ -142,6 +194,8 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       headers,
       kind,
       quality: isVideo ? quality : undefined,
+      write_subs: isVideo && writeSubs,
+      sub_lang: isVideo && writeSubs ? subLang : undefined,
     });
     setBusy(false);
     if (task) {
@@ -159,13 +213,13 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => e.target === e.currentTarget && (isGrab ? handleReject() : onClose())}
     >
-      <div className="animate-pop w-full max-w-lg rounded-lg border border-[var(--border)] bg-[var(--panel)] p-6 shadow-[var(--shadow)]">
-        <div className="mb-5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
-              <ZapIcon width={17} height={17} />
+      <div className="animate-pop flex max-h-[min(88vh,44rem)] w-full max-w-[min(32rem,calc(100vw-1.5rem))] flex-col rounded-lg border border-[var(--border)] bg-[var(--panel)] shadow-[var(--shadow)]">
+        <div className="mb-3 flex shrink-0 items-center justify-between px-4 pt-4 sm:px-5 sm:pt-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
+              <ZapIcon width={15} height={15} />
             </div>
-            <h2 className="text-[16px] font-bold">
+            <h2 className="truncate text-[15px] font-bold">
               {isGrab ? t("dialog.grabTitle") : t("dialog.title")}
             </h2>
           </div>
@@ -178,7 +232,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
           </button>
         </div>
 
-        <div className="space-y-4">
+        <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-4 pb-2 sm:px-5">
           <div>
             <label className="mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]">
               {t("dialog.url")}
@@ -198,7 +252,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]">
                 {t("dialog.filename")}
@@ -270,22 +324,79 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
           </div>
 
           {isVideo && (
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]">
-                {t("dialog.videoQuality")}
-              </label>
-              <select
-                value={quality}
-                onChange={(e) => setQuality(e.target.value)}
-                className={`${input} cursor-pointer`}
-              >
-                {VIDEO_QUALITIES.map((q) => (
-                  <option key={q.key} value={q.key}>
-                    {t("videoQuality." + q.key, q.key)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <>
+              <div>
+                <label className="mb-1.5 block text-[12.5px] font-semibold text-[var(--text-2)]">
+                  {t("dialog.videoQuality")}
+                </label>
+                <select
+                  value={quality}
+                  onChange={(e) => setQuality(e.target.value)}
+                  className={`${input} cursor-pointer`}
+                >
+                  {VIDEO_QUALITIES.map((q) => (
+                    <option key={q.key} value={q.key}>
+                      {t("videoQuality." + q.key, q.key)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <label className="text-[12.5px] font-semibold text-[var(--text-2)]">
+                    {t("dialog.writeSubs") || "Subtitles"}
+                  </label>
+                  {url.trim() && isVideo && (
+                    <button
+                      type="button"
+                      onClick={() => detectSubtitles(url)}
+                      disabled={subsLoading}
+                      className="text-[11px] text-[var(--accent)] hover:underline"
+                    >
+                      {subsLoading
+                        ? (t("verify.computing") || "Detecting…")
+                        : (t("dialog.detectSubs") || "Auto-detect")}
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="flex cursor-pointer items-center gap-2 text-[12.5px]">
+                    <input
+                      type="checkbox"
+                      checked={writeSubs}
+                      onChange={(e) => setWriteSubs(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border)] accent-[var(--accent)]"
+                    />
+                    {t("dialog.enableSubs") || "Enable"}
+                  </label>
+                </div>
+                {writeSubs && (
+                  <div className="mt-2">
+                    {availableSubs.length > 0 ? (
+                      <select
+                        value={subLang}
+                        onChange={(e) => setSubLang(e.target.value)}
+                        className={`${input} cursor-pointer`}
+                      >
+                        {availableSubs.map((s) => (
+                          <option key={s.code} value={s.code}>
+                            {s.name || s.code}{s.auto ? " (auto)" : ""} — {s.code}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        value={subLang}
+                        onChange={(e) => setSubLang(e.target.value)}
+                        placeholder="en, zh, ja, ko…"
+                        className={input}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {error && (
@@ -294,18 +405,18 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
             </div>
           )}
 
-          <div className="flex justify-end gap-2.5 pt-2">
+          <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--border-soft)] px-4 py-3 sm:flex-row sm:items-center sm:justify-end sm:px-5">
             <button
               onClick={isGrab ? handleReject : onClose}
               disabled={busy}
-              className="btn btn-outline disabled:opacity-50"
+              className="btn btn-outline w-full disabled:opacity-50 sm:w-auto"
             >
               {isGrab ? t("action.cancel") : t("action.close")}
             </button>
             <button
               onClick={submit}
               disabled={busy}
-              className="btn btn-primary"
+              className="btn btn-primary w-full sm:w-auto"
             >
               <ZapIcon width={15} height={15} />
               {busy ? "…" : isGrab ? t("action.download") : t("action.start")}

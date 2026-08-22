@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::process::Command as TokioCommand;
 use std::io::Write as _;
@@ -38,12 +40,14 @@ pub fn tools_exist(data_dir: &Path) -> bool {
 pub fn tool_versions(data_dir: &Path) -> (Option<String>, Option<String>) {
     let yt_ver = StdCommand::new(ytdlp_path(data_dir))
         .args(["--version"])
+        .creation_flags(0x08000000)
         .output()
         .ok()
         .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
         .map(|s| s.trim().to_string());
     let ff_ver = StdCommand::new(ffmpeg_path(data_dir))
         .args(["-version"])
+        .creation_flags(0x08000000)
         .output()
         .ok()
         .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
@@ -221,6 +225,153 @@ pub async fn install_video_tools(app: AppHandle) -> Result<ToolsStatus, String> 
     Ok(get_video_tools_status(app))
 }
 
+/// Returns true if the error looks like it might need browser cookies.
+fn needs_cookies_retry(err_msg: &str) -> bool {
+    let lower = err_msg.to_lowercase();
+    lower.contains("no video")
+        || lower.contains("sign in")
+        || lower.contains("login")
+        || lower.contains("not authorized")
+        || lower.contains("could not find video")
+}
+
+/// Build the yt-dlp argument list.
+fn build_ytdlp_args(
+    save_dir: &str,
+    format_selector: &str,
+    url: &str,
+    headers: &std::collections::HashMap<String, String>,
+    proxy: &str,
+    limit_kbps: u64,
+    ffmpeg_path: Option<&Path>,
+    with_cookies: bool,
+    write_subs: bool,
+    sub_lang: Option<&str>,
+) -> Vec<String> {
+    let output_template = format!("{}\\%(title).120B [%(id)s].%(ext)s", save_dir);
+    let mut args: Vec<String> = vec![
+        "--newline".into(),
+        "-o".into(),
+        output_template,
+        "-f".into(),
+        format_selector.into(),
+        "-N".into(),
+        "4".into(),
+    ];
+
+    if let Some(ff) = ffmpeg_path {
+        args.push("--ffmpeg-location".into());
+        args.push(ff.to_string_lossy().to_string());
+    }
+
+    for (k, v) in headers {
+        args.push("--add-header".into());
+        args.push(format!("{}: {}", k, v));
+    }
+
+    if proxy != "system" && proxy != "none" {
+        args.push("--proxy".into());
+        args.push(proxy.to_string());
+    }
+
+    if limit_kbps > 0 {
+        args.push("--limit-rate".into());
+        args.push(format!("{}K", limit_kbps));
+    }
+
+    if with_cookies {
+        args.push("--cookies-from-browser".into());
+        args.push("chrome".into());
+    }
+
+    if write_subs {
+        args.push("--write-subs".into());
+        args.push("--write-auto-subs".into());
+        let lang = sub_lang.unwrap_or("en");
+        args.push("--sub-lang".into());
+        args.push(lang.to_string());
+        args.push("--embed-subs".into());
+    }
+
+    args.push(url.to_string());
+    args
+}
+
+/// Spawn yt-dlp and run its I/O loop. Returns Ok(()) on success,
+/// or Err(error_message) on failure.
+async fn run_ytdlp_child(
+    mgr: &DownloadManager,
+    tid: &str,
+    data_dir: &Path,
+    args: Vec<String>,
+    token: &CancellationToken,
+) -> Result<(), String> {
+    let mut child = TokioCommand::new(ytdlp_path(data_dir))
+        .args(&args)
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .creation_flags(0x08000000)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to start yt-dlp: {}", e))?;
+
+    let stderr = child.stderr.take().ok_or("yt-dlp did not provide stderr")?;
+    let stdout = child.stdout.take().ok_or("yt-dlp did not provide stdout")?;
+
+    let mut stderr_lines = BufReader::new(stderr).lines();
+    let mut stdout_lines = BufReader::new(stdout).lines();
+
+    let mut last_persist = Instant::now();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut captured_error: Option<String> = None;
+
+    while !stdout_done || !stderr_done {
+        tokio::select! {
+            out_line = stdout_lines.next_line(), if !stdout_done => {
+                match out_line {
+                    Ok(Some(ref l)) => {
+                        process_ytdlp_line(l, mgr, tid, &mut last_persist);
+                    }
+                    Ok(None) | Err(_) => { stdout_done = true; }
+                }
+            }
+            err_line = stderr_lines.next_line(), if !stderr_done => {
+                match err_line {
+                    Ok(Some(ref l)) => {
+                        if l.starts_with("ERROR:") {
+                            let err_msg = l.strip_prefix("ERROR:").unwrap_or(l).trim().to_string();
+                            captured_error = Some(err_msg);
+                            let _ = child.kill().await;
+                            break;
+                        }
+                        process_ytdlp_line(l, mgr, tid, &mut last_persist);
+                    }
+                    Ok(None) | Err(_) => { stderr_done = true; }
+                }
+            }
+            _ = token.cancelled() => {
+                let _ = child.kill().await;
+                mgr.set_status(tid, TaskStatus::Canceled, None);
+                mgr.persist();
+                return Err("canceled".into());
+            }
+        }
+    }
+
+    let exit_status = child.wait().await;
+
+    if let Some(err_msg) = captured_error {
+        return Err(err_msg);
+    }
+
+    match exit_status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => Err("yt-dlp exited with an error".into()),
+        Err(e) => Err(format!("Failed to run yt-dlp: {}", e)),
+    }
+}
+
 pub async fn run_ytdlp_task(
     manager: Arc<DownloadManager>,
     id: String,
@@ -237,11 +388,9 @@ pub async fn run_ytdlp_task(
         return;
     }
 
-    let sem = manager.semaphore();
-    let _permit = match sem.acquire_owned().await {
-        Ok(p) => p,
-        Err(_) => return,
-    };
+    // NOTE: gate permit is already held by the caller (engine::run_task).
+    // Do NOT acquire another permit here — it would deadlock when
+    // max_concurrent == 1 or waste a slot at higher limits.
 
     let task = match manager.get(&id) {
         Some(t) => t,
@@ -253,220 +402,213 @@ pub async fn run_ytdlp_task(
     }
 
     let save_dir = task.save_dir.clone();
-    let output_template = format!("{}\\%(title).120B [%(id)s].%(ext)s", save_dir);
-    let format_selector = quality_to_format(quality.unwrap_or_default().as_str());
-
-    let mut args: Vec<String> = vec![
-        "--newline".into(),
-        "-o".into(),
-        output_template,
-        "-f".into(),
-        format_selector.into(),
-        "-N".into(),
-        "4".into(),
-    ];
-
-    let ffmpeg = ffmpeg_path(&data_dir);
-    if ffmpeg.exists() {
-        args.push("--ffmpeg-location".into());
-        args.push(ffmpeg.to_string_lossy().to_string());
-    }
-
-    for (k, v) in &task.headers {
-        args.push("--add-header".into());
-        args.push(format!("{}: {}", k, v));
-    }
-
+    let format_selector = quality_to_format(quality.unwrap_or_default().as_str()).to_string();
+    let headers = task.headers.clone();
     let proxy = manager.settings.read().proxy.clone();
-    if proxy != "system" && proxy != "none" {
-        args.push("--proxy".into());
-        args.push(proxy);
-    }
-
     let limit_kbps = manager.settings.read().speed_limit_kbps;
-    if limit_kbps > 0 {
-        args.push("--limit-rate".into());
-        args.push(format!("{}K", limit_kbps));
-    }
-
-    args.push(url.clone());
+    let ffmpeg = ffmpeg_path(&data_dir);
+    let has_ffmpeg = ffmpeg.exists();
+    let write_subs = task.write_subs;
+    let sub_lang = task.sub_lang.clone();
 
     manager.set_status(&id, TaskStatus::Downloading, None);
 
     let token = CancellationToken::new();
     manager.register_running(&id, token.clone());
 
-    let mut child = match TokioCommand::new(ytdlp_path(&data_dir))
-        .args(&args)
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            manager.set_status(&id, TaskStatus::Error, Some(format!("Failed to start yt-dlp: {}", e)));
-            return;
-        }
-    };
+    // First attempt: without browser cookies
+    let args = build_ytdlp_args(
+        &save_dir,
+        &format_selector,
+        &url,
+        &headers,
+        &proxy,
+        limit_kbps,
+        has_ffmpeg.then_some(&ffmpeg),
+        false,
+        write_subs,
+        sub_lang.as_deref(),
+    );
 
-    let stderr = match child.stderr.take() {
-        Some(s) => s,
-        None => {
-            manager.set_status(&id, TaskStatus::Error, Some("yt-dlp did not provide stderr".into()));
-            return;
-        }
-    };
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            manager.set_status(&id, TaskStatus::Error, Some("yt-dlp did not provide stdout".into()));
-            return;
-        }
-    };
+    let result = run_ytdlp_child(&manager, &id, &data_dir, args, &token).await;
 
-    let mut stderr_lines = BufReader::new(stderr).lines();
-    let mut stdout_lines = BufReader::new(stdout).lines();
-
-    let mgr = manager.clone();
-    let tid = id.clone();
-    let mut last_persist = Instant::now();
-    let mut stdout_done = false;
-    let mut stderr_done = false;
-
-    // yt-dlp with --newline writes progress to stdout; info/errors go to
-    // stderr.  Without --newline everything goes to stderr.  Parse BOTH
-    // streams so we work either way.
-    while !stdout_done || !stderr_done {
-        tokio::select! {
-            out_line = stdout_lines.next_line(), if !stdout_done => {
-                match out_line {
-                    Ok(Some(ref l)) => {
-                        process_ytdlp_line(l, &mgr, &tid, &mut last_persist);
-                    }
-                    Ok(None) | Err(_) => { stdout_done = true; }
-                }
-            }
-            err_line = stderr_lines.next_line(), if !stderr_done => {
-                match err_line {
-                    Ok(Some(ref l)) => {
-                        if l.starts_with("ERROR:") {
-                            let err_msg = l.strip_prefix("ERROR:").unwrap_or(l).trim();
-                            let hint = if err_msg.to_lowercase().contains("drm")
-                                || err_msg.to_lowercase().contains("sign in")
-                                || err_msg.to_lowercase().contains("login")
-                                || err_msg.to_lowercase().contains("age")
-                            {
-                                " (DRM protected or login-required content)"
-                            } else {
-                                ""
-                            };
-                            mgr.set_status(&tid, TaskStatus::Error, Some(format!("{}{}", err_msg, hint)));
-                            let _ = child.kill().await;
-                            break;
-                        }
-                        process_ytdlp_line(l, &mgr, &tid, &mut last_persist);
-                    }
-                    Ok(None) | Err(_) => { stderr_done = true; }
-                }
-            }
-            _ = token.cancelled() => {
-                let _ = child.kill().await;
-                mgr.set_status(&tid, TaskStatus::Canceled, None);
-                mgr.persist();
-                return;
-            }
-        }
-    }
-
-    let exit_status = child.wait().await;
-    let is_current = mgr.is_running_current(&id, &token);
-    mgr.unregister_running_if(&id, &token);
+    let is_current = manager.is_running_current(&id, &token);
+    manager.unregister_running_if(&id, &token);
 
     if !is_current {
         return;
     }
 
-    match exit_status {
-        Ok(s) if s.success() => {
-            // If progress was never tracked (total_size still None), try to find
-            // the output file in save_dir so we at least show the final file size.
-            {
-                let mut tasks = mgr.tasks.lock();
-                if let Some(t) = tasks.get_mut(&id) {
-                    if t.total_size.is_none() {
-                        // yt-dlp likely sent all output to stderr/stdout but lines
-                        // were never parsed.  Scan save_dir for a recent file.
-                        let save = t.save_dir.clone();
-                        let url_id = t.url.split('v').last().unwrap_or("");
-                        if let Ok(entries) = std::fs::read_dir(&save) {
-                            let mut best: Option<(String, u64)> = None;
-                            for entry in entries.flatten() {
-                                let meta = match entry.metadata() {
-                                    Ok(m) => m,
-                                    Err(_) => continue,
-                                };
-                                if !meta.is_file() {
-                                    continue;
-                                }
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                // Match by video id in filename, or by largest video file
-                                let name_lower = name.to_lowercase();
-                                let ext_ok = name_lower.ends_with(".mp4")
-                                    || name_lower.ends_with(".mkv")
-                                    || name_lower.ends_with(".webm")
-                                    || name_lower.ends_with(".m4a")
-                                    || name_lower.ends_with(".mp3")
-                                    || name_lower.ends_with(".ogg");
-                                if !ext_ok {
-                                    continue;
-                                }
-                                let score = if !url_id.is_empty() && name.contains(url_id) {
-                                    2
-                                } else {
-                                    1
-                                };
-                                let prev_score = best.as_ref().map(|b| if b.0.contains(url_id) { 2 } else { 1 }).unwrap_or(0);
-                                if score > prev_score || (score == prev_score && meta.len() > best.as_ref().map(|b| b.1).unwrap_or(0)) {
-                                    best = Some((entry.path().to_string_lossy().to_string(), meta.len()));
-                                }
-                            }
-                            if let Some((path, size)) = best {
-                                t.total_size = Some(size);
-                                t.downloaded = size;
-                                if let Some(name) = Path::new(&path).file_name().and_then(|n| n.to_str()) {
-                                    t.filename = name.to_string();
-                                }
-                                t.file_path = path;
-                            }
-                        }
+    match &result {
+        Ok(()) => {
+            finish_ytdlp_task(&manager, &id);
+        }
+        Err(err_msg) => {
+            // If the error suggests we might need auth, retry with cookies
+            if needs_cookies_retry(err_msg) {
+                manager.set_status(&id, TaskStatus::Downloading, Some("Retrying with browser cookies...".into()));
+                manager.persist();
+
+                let token2 = CancellationToken::new();
+                manager.register_running(&id, token2.clone());
+
+                let args2 = build_ytdlp_args(
+                    &save_dir,
+                    &format_selector,
+                    &url,
+                    &headers,
+                    &proxy,
+                    limit_kbps,
+                    has_ffmpeg.then_some(&ffmpeg),
+                    true,
+                    write_subs,
+                    sub_lang.as_deref(),
+                );
+
+                let result2 = run_ytdlp_child(&manager, &id, &data_dir, args2, &token2).await;
+                let is_current2 = manager.is_running_current(&id, &token2);
+                manager.unregister_running_if(&id, &token2);
+
+                if !is_current2 {
+                    return;
+                }
+
+                match result2 {
+                    Ok(()) => {
+                        finish_ytdlp_task(&manager, &id);
                     }
-                    if t.status == TaskStatus::Downloading {
-                        t.status = TaskStatus::Completed;
-                        t.finished_at = Some(crate::download::manager::now_ms());
-                        t.speed = 0.0;
-                        if let Some(total) = t.total_size {
-                            t.downloaded = total;
-                        }
+                    Err(err_msg2) => {
+                        let hint = format_ytdlp_hint(&err_msg2);
+                        manager.set_status(&id, TaskStatus::Error, Some(format!("{}{}", err_msg2, hint)));
                     }
                 }
+            } else {
+                let hint = format_ytdlp_hint(err_msg);
+                manager.set_status(&id, TaskStatus::Error, Some(format!("{}{}", err_msg, hint)));
             }
-            drop(mgr.tasks.lock());
-            mgr.persist();
-            if let Some(t) = mgr.get(&id) {
-                mgr.on_completed(&t);
-            }
-        }
-        Ok(_) => {
-            let current = mgr.get(&id).unwrap_or(task);
-            if current.status == TaskStatus::Downloading {
-                mgr.set_status(&id, TaskStatus::Error, Some("yt-dlp exited with an error".into()));
-            }
-        }
-        Err(e) => {
-            mgr.set_status(&id, TaskStatus::Error, Some(format!("Failed to run yt-dlp: {}", e)));
         }
     }
+}
+
+fn format_ytdlp_hint(err_msg: &str) -> String {
+    let lower = err_msg.to_lowercase();
+    if lower.contains("drm") || lower.contains("sign in") || lower.contains("login") || lower.contains("age") {
+        " (DRM protected or login-required content)".into()
+    } else {
+        "".into()
+    }
+}
+
+fn finish_ytdlp_task(mgr: &DownloadManager, id: &str) {
+    // Always try to find the actual output file so total_size reflects the
+    // real on-disk file (important for video+audio merges where progress only
+    // tracked one of the two passes).
+    {
+        let mut tasks = mgr.tasks.lock();
+        if let Some(t) = tasks.get_mut(id) {
+            let save = t.save_dir.clone();
+            let url_id = extract_video_id(&t.url);
+            if let Ok(entries) = std::fs::read_dir(&save) {
+                let mut best: Option<(String, u64)> = None;
+                for entry in entries.flatten() {
+                    let meta = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    if !meta.is_file() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let name_lower = name.to_lowercase();
+                    let ext_ok = name_lower.ends_with(".mp4")
+                        || name_lower.ends_with(".mkv")
+                        || name_lower.ends_with(".webm")
+                        || name_lower.ends_with(".m4a")
+                        || name_lower.ends_with(".mp3")
+                        || name_lower.ends_with(".ogg");
+                    if !ext_ok {
+                        continue;
+                    }
+                    let score = if !url_id.is_empty() && name.contains(url_id.as_str()) {
+                        2
+                    } else {
+                        1
+                    };
+                    let prev_score = best.as_ref().map(|b| if b.0.contains(url_id.as_str()) { 2 } else { 1 }).unwrap_or(0);
+                    if score > prev_score || (score == prev_score && meta.len() > best.as_ref().map(|b| b.1).unwrap_or(0)) {
+                        best = Some((entry.path().to_string_lossy().to_string(), meta.len()));
+                    }
+                }
+                if let Some((path, size)) = best {
+                    t.total_size = Some(size);
+                    t.downloaded = size;
+                    if let Some(name) = Path::new(&path).file_name().and_then(|n| n.to_str()) {
+                        t.filename = name.to_string();
+                    }
+                    t.file_path = path;
+                }
+            }
+            if t.status == TaskStatus::Downloading {
+                t.status = TaskStatus::Completed;
+                t.finished_at = Some(crate::download::manager::now_ms());
+                t.speed = 0.0;
+                if let Some(total) = t.total_size {
+                    t.downloaded = total;
+                }
+            }
+        }
+    }
+    mgr.persist();
+    mgr.notify_tasks();
+    if let Some(t) = mgr.get(id) {
+        mgr.on_completed(&t);
+    }
+}
+
+/// Best-effort extraction of a video id from common URL forms:
+///   - https://youtu.be/<id>
+///   - https://...(watch|shorts|embed)...v=<id> / <id>
+/// Returns "" when nothing can be confidently parsed.
+fn extract_video_id(url: &str) -> String {
+    let lower = url.to_lowercase();
+    for scheme in ["youtu.be/", "youtube.com/shorts/", "youtu.be/shorts/", "youtube.com/embed/", "youtube-nocookie.com/embed/"] {
+        if let Some(idx) = lower.find(scheme) {
+            let start = idx + scheme.len();
+            let id: String = url[start..]
+                .split(|c: char| c == '?' || c == '&' || c == '#' || c == '/')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if is_yt_id(&id) {
+                return id;
+            }
+        }
+    }
+    // watch?v=<id>
+    for marker in ["v=", "vi="] {
+        if let Some(idx) = lower.find(marker) {
+            let start = idx + marker.len();
+            let id: String = url[start..]
+                .split(|c: char| c == '&' || c == '#' || c == '?')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            // Trim trailing slash
+            let id = id.trim_end_matches('/');
+            if is_yt_id(id) {
+                return id.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn is_yt_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 24
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &mut Instant) {
@@ -480,12 +622,29 @@ fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
             let mut tasks = mgr.tasks.lock();
             if let Some(t) = tasks.get_mut(tid) {
                 if let Some(total) = total {
-                    t.total_size = Some(total);
+                    let prev_total = t.total_size;
+                    // Keep the largest seen total size. Video downloads run in
+                    // two passes (video then audio), each 0-100%, so the second
+                    // pass has a smaller total; never shrink the bar.
+                    if prev_total.map_or(true, |cur| total > cur) {
+                        t.total_size = Some(total);
+                    }
+                    // Detect new pass: if total size drops significantly (new
+                    // pass started), reset downloaded to current position.
+                    // Otherwise only advance forward to avoid flicker.
+                    let new_pass = prev_total.map_or(false, |old| total < old / 2);
+                    if new_pass || downloaded > t.downloaded {
+                        t.downloaded = downloaded;
+                    }
                 }
-                t.downloaded = downloaded;
+                // Always update speed — use the parsed value or fall back to 0
+                // so the UI never shows stale speed data.
                 t.speed = speed.unwrap_or(0.0);
             }
         }
+        // Push a throttled snapshot so the UI updates in near-real-time instead
+        // of waiting for the fallback poll.
+        mgr.notify_tasks();
         if last_persist.elapsed() > Duration::from_millis(500) {
             mgr.persist();
             *last_persist = Instant::now();
@@ -521,19 +680,23 @@ fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
             t.downloaded = t.total_size.unwrap_or(t.downloaded);
             t.speed = 0.0;
         }
+        mgr.persist();
+        mgr.notify_tasks();
     }
 }
 
 fn quality_to_format(quality: &str) -> &'static str {
+    // Prefer mp4/m4a containers for better compatibility, fall back to any format.
     match quality {
-        "best" => "bv+ba/b",
-        "video" => "bv",
-        "audio" => "ba",
-        "2160p" => "bv[height<=2160]+ba/b",
-        "1080p" => "bv[height<=1080]+ba/b",
-        "720p" => "bv[height<=720]+ba/b",
-        "480p" => "bv[height<=480]+ba/b",
-        _ => "bv+ba/b",
+        "best" => "bv[ext=mp4]+ba[ext=m4a]/bv[ext=mp4]+ba/bv+ba/b",
+        "video" => "bv[ext=mp4]/bv",
+        "audio" => "ba[ext=m4a]/ba",
+        "2160p" => "bv[height<=2160][ext=mp4]+ba[ext=m4a]/bv[height<=2160]+ba/b",
+        "1080p" => "bv[height<=1080][ext=mp4]+ba[ext=m4a]/bv[height<=1080]+ba/b",
+        "720p" => "bv[height<=720][ext=mp4]+ba[ext=m4a]/bv[height<=720]+ba/b",
+        "480p" => "bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480]+ba/b",
+        "360p" => "bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360]+ba/b",
+        _ => "bv[ext=mp4]+ba[ext=m4a]/bv+ba/b",
     }
 }
 
@@ -559,7 +722,13 @@ fn parse_yt_dlp_progress(line: &str) -> Option<(f64, Option<u64>, Option<f64>)> 
     let percent = percent_str.trim_end_matches('%').parse::<f64>().ok()?;
 
     let rest = parts[1..].join(" of ");
-    let total_str = rest.split(" at ").next()?.trim();
+    // The 100% line uses "in" instead of "at":
+    //   [download] 100% of 12.34MiB in 00:05
+    // Normal lines use "at":
+    //   [download]  45.3% of 12.34MiB at 1.23MiB/s ETA 00:05
+    let total_str = rest.split(" at ").next()
+        .and_then(|s| s.split(" in ").next())
+        .map(str::trim)?;
     let total = parse_byte_size(total_str).map(|f| f as u64);
 
     let speed = rest
@@ -631,9 +800,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_progress_line_100_percent_with_in() {
+        // yt-dlp outputs "in" instead of "at" for the 100% summary line
+        let (p, t, s) = parse_yt_dlp_progress("[download] 100% of  12.34MiB in 00:05").unwrap();
+        assert!((p - 100.0).abs() < 0.01);
+        assert_eq!(t, Some((12.34 * 1024.0 * 1024.0) as u64));
+        assert_eq!(s, None);
+    }
+
+    #[test]
+    fn parse_progress_line_100_percent_with_at() {
+        let (p, t, s) = parse_yt_dlp_progress("[download] 100% of  5.67MiB at  2.00MiB/s ETA 00:00").unwrap();
+        assert!((p - 100.0).abs() < 0.01);
+        assert_eq!(t, Some((5.67 * 1024.0 * 1024.0) as u64));
+        assert_eq!(s, Some(2.00 * 1024.0 * 1024.0));
+    }
+
+    #[test]
     fn quality_mapping() {
-        assert_eq!(quality_to_format("best"), "bv+ba/b");
-        assert_eq!(quality_to_format("1080p"), "bv[height<=1080]+ba/b");
-        assert_eq!(quality_to_format("audio"), "ba");
+        assert_eq!(quality_to_format("best"), "bv[ext=mp4]+ba[ext=m4a]/bv[ext=mp4]+ba/bv+ba/b");
+        assert_eq!(quality_to_format("2160p"), "bv[height<=2160][ext=mp4]+ba[ext=m4a]/bv[height<=2160]+ba/b");
+        assert_eq!(quality_to_format("1080p"), "bv[height<=1080][ext=mp4]+ba[ext=m4a]/bv[height<=1080]+ba/b");
+        assert_eq!(quality_to_format("360p"), "bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360]+ba/b");
+        assert_eq!(quality_to_format("audio"), "ba[ext=m4a]/ba");
     }
 }

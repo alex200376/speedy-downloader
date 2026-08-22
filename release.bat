@@ -14,10 +14,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem Path to the generated installer (product name and version are taken from tauri.conf.json)
-set "INST_PATH=src-tauri\target\release\bundle\nsis\SpeedDownloader_1.0.0_x64-setup.exe"
+rem Read the product version dynamically from tauri.conf.json (no hardcoding)
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content 'src-tauri\tauri.conf.json' | ConvertFrom-Json).version"`) do set "VERSION=%%i"
+if "%VERSION%"=="" (
+    echo Could not read version from tauri.conf.json.
+    pause
+    exit /b 1
+)
+echo Detected version: %VERSION%
+
+rem Path to the generated installer (product name and version from tauri.conf.json)
+set "INST_PATH=src-tauri\target\release\bundle\nsis\SpeedDownloader_%VERSION%_x64-setup.exe"
 if not exist "%INST_PATH%" (
     echo Installer not found at %INST_PATH%.
+    echo Try running: npx tauri build --bundles nsis manually and check the output path.
     pause
     exit /b 1
 )

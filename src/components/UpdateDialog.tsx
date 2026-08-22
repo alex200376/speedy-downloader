@@ -59,7 +59,7 @@ export default function UpdateDialog({ open, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="animate-pop w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--panel)] p-6 shadow-[var(--shadow)]">
+      <div className="animate-pop w-full max-w-[min(28rem,calc(100vw-2rem))] rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 sm:p-6 shadow-[var(--shadow)]">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-[16px] font-bold">{t("update.title")}</h2>
           <button onClick={onClose} className="icon-btn">

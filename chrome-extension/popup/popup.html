@@ -17,28 +17,49 @@
         </div>
       </header>
 
-      <div class="section">
+      <div class="input-group">
         <input
           id="urlInput"
           type="text"
-          placeholder="https://example.com/file.zip"
+          placeholder="Paste URL or magnet link…"
           spellcheck="false"
         />
-        <button id="grabBtn" class="grab">⚡ 下载</button>
+        <button id="grabBtn" class="btn-primary">Download</button>
       </div>
 
-      <button id="grabVideoBtn" class="grab" style="margin-top:8px;">🎬 下载本页视频</button>
+      <div class="quick-actions">
+        <button id="grabVideoBtn" class="btn-secondary">
+          <span class="btn-icon">🎬</span> Video
+        </button>
+        <button id="grabPlaylistBtn" class="btn-secondary">
+          <span class="btn-icon">📋</span> Playlist
+        </button>
+      </div>
 
-      <label class="toggle">
+      <label class="toggle-row">
         <input id="autoGrab" type="checkbox" />
-        <span class="track"></span>
-        <span id="autoGrabText">自动拦截浏览器下载</span>
+        <span class="toggle-track"></span>
+        <span id="autoGrabText">Auto-grab downloads</span>
       </label>
 
+      <details class="settings" id="settingsPanel">
+        <summary>Settings</summary>
+        <div class="settings-body">
+          <input id="tokenInput" type="password" placeholder="API Token…" spellcheck="false" />
+          <div class="token-hint" id="tokenHint">Copy from app: Settings → Extension</div>
+        </div>
+      </details>
+
       <div class="tasks">
-        <div class="tasks-title" id="tasksTitle">最近任务</div>
+        <div class="tasks-header">
+          <span class="tasks-title" id="tasksTitle">Recent Tasks</span>
+          <span class="task-count" id="taskCount"></span>
+        </div>
         <div id="taskList" class="task-list"></div>
-        <div id="taskEmpty" class="task-empty">暂无任务</div>
+        <div id="taskEmpty" class="task-empty">
+          <div class="empty-icon">⚡</div>
+          <p>No tasks yet</p>
+        </div>
       </div>
     </div>
     <script src="popup.js"></script>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { chooseFolder, EXTENSION_DOWNLOAD_URL, getVideoToolsStatus, installVideoTools, isTauri, openExtensionsPage, openUrl, prepareExtension } from "../api";
+import { chooseFolder, EXTENSION_DOWNLOAD_URL, getApiToken, getVideoToolsStatus, installVideoTools, isTauri, openExtensionsPage, openUrl, prepareExtension } from "../api";
 import { useSettingsStore } from "../store/settingsStore";
 import { useToastStore } from "../store/toastStore";
 import type { Settings } from "../types";
@@ -53,6 +53,19 @@ export default function SettingsDialog({ open, onClose }: Props) {
   const [videoTools, setVideoTools] = useState<{ installed: boolean; ytdlp_version: string | null; ffmpeg_version: string | null; path: string } | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
+  const [apiToken, setApiToken] = useState("");
+  const [tokenCopied, setTokenCopied] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    getApiToken().then((tk) => {
+      if (alive) setApiToken(tk);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (open && settings) setDraft(settings);
@@ -109,6 +122,17 @@ export default function SettingsDialog({ open, onClose }: Props) {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* noop */
+    }
+  };
+
+  const copyToken = async () => {
+    try {
+      await navigator.clipboard.writeText(apiToken);
+      setTokenCopied(true);
+      toast("success", t("settings.apiTokenCopied"));
+      setTimeout(() => setTokenCopied(false), 1600);
     } catch {
       /* noop */
     }
@@ -419,6 +443,21 @@ export default function SettingsDialog({ open, onClose }: Props) {
                 yt-dlp (~17.5MB) + ffmpeg (~80MB) will be downloaded on first install. Windows Defender may flag them as false-positive.
               </p>
             </div>
+            <div className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--bg-2)]/40 p-3">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="text-[12.5px] font-semibold text-[var(--text-2)]">{t("settings.apiToken")}</span>
+                <span className="text-[11px] text-[var(--muted)]">{t("settings.apiTokenHint")}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-[11.5px] text-[var(--text)]">
+                  {apiToken || "…"}
+                </code>
+                <button onClick={copyToken} className="btn btn-ghost px-2 text-[12px]">
+                  {tokenCopied ? <CheckIcon width={13} height={13} /> : <CopyIcon width={13} height={13} />}
+                  {tokenCopied ? t("action.copy") + " ✓" : t("settings.copyToken")}
+                </button>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => openUrl(EXTENSION_DOWNLOAD_URL)}
@@ -450,7 +489,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="animate-pop flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-[var(--shadow)]">
+      <div className="animate-pop flex max-h-[90vh] w-full max-w-[min(36rem,calc(100vw-1rem))] flex-col rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-[var(--shadow)]">
         <div className="flex shrink-0 items-center justify-between px-6 pt-5">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel-2)] text-[var(--text)]">
@@ -463,7 +502,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
           </button>
         </div>
 
-        <div className="mt-3 flex shrink-0 gap-1 border-b border-[var(--border)] px-4">
+        <div className="mt-3 flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-4">
           {TABS.map((tb) => (
             <button
               key={tb.key}
@@ -479,9 +518,9 @@ export default function SettingsDialog({ open, onClose }: Props) {
           ))}
         </div>
 
-        <div className="space-y-4 overflow-y-auto px-6 py-5">{renderTab()}</div>
+        <div className="space-y-4 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">{renderTab()}</div>
 
-        <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[var(--border-soft)] px-6 py-4">
+        <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[var(--border-soft)] px-4 py-3 sm:px-6 sm:py-4">
           <button onClick={onClose} className="btn btn-outline">
             {t("action.close")}
           </button>

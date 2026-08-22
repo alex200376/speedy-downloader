@@ -44,6 +44,8 @@ export interface DownloadTask {
   segment_states: SegmentState[];
   kind?: "http" | "video";
   quality?: string | null;
+  write_subs?: boolean;
+  sub_lang?: string | null;
 }
 
 export interface Settings {
@@ -65,7 +67,8 @@ export interface Settings {
 export type DuplicatePolicy = "rename" | "overwrite" | "skip";
 
 export interface VerifyHashResult {
-  sha256: string;
+  hash: string;
+  algorithm: string;
   matched: boolean | null;
   filename: string;
 }
@@ -94,4 +97,11 @@ export interface UpdateInfo {
   asset_url: string;
   asset_size: number;
   release_url: string;
+}
+
+export interface PlaylistVideo {
+  url: string;
+  title: string;
+  duration: number | null;
+  id: string | null;
 }

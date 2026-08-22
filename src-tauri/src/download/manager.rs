@@ -3,16 +3,17 @@ use crate::settings::Settings;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 pub struct DownloadManager {
     pub tasks: Mutex<HashMap<String, DownloadTask>>,
     running: Mutex<HashMap<String, CancellationToken>>,
-    pub semaphore: Mutex<Arc<tokio::sync::Semaphore>>,
+    pub gate: Arc<ConcurrencyGate>,
     client: Mutex<Arc<reqwest::Client>>,
     pub data_dir: PathBuf,
     pub settings: Arc<parking_lot::RwLock<Settings>>,
@@ -20,8 +21,65 @@ pub struct DownloadManager {
     limiter: tokio::sync::Mutex<Limiter>,
     progress_stats: Mutex<ProgressStats>,
     last_persist: Mutex<Instant>,
+    last_event: Mutex<Option<Instant>>,
     total_bytes: AtomicU64,
     id_counter: AtomicU64,
+}
+
+/// A dynamically resizable concurrency gate. Unlike a tokio `Semaphore`, the
+/// limit can be changed on the fly and running/queued tasks honour the new
+/// value immediately.
+pub struct ConcurrencyGate {
+    limit: AtomicUsize,
+    active: AtomicUsize,
+    notify: Notify,
+}
+
+pub struct GatePermit {
+    gate: Arc<ConcurrencyGate>,
+}
+
+impl Drop for GatePermit {
+    fn drop(&mut self) {
+        self.gate.active.fetch_sub(1, Ordering::SeqCst);
+        self.gate.notify.notify_one();
+    }
+}
+
+impl ConcurrencyGate {
+    fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit: AtomicUsize::new(limit.max(1)),
+            active: AtomicUsize::new(0),
+            notify: Notify::new(),
+        })
+    }
+
+    /// Acquire a slot, waiting while the number of active tasks is at the limit.
+    /// Limit changes wake all waiters so they re-evaluate immediately.
+    pub async fn acquire_owned(self: &Arc<Self>) -> GatePermit {
+        loop {
+            let cur = self.active.load(Ordering::SeqCst);
+            let lim = self.limit.load(Ordering::SeqCst);
+            if cur < lim {
+                if self
+                    .active
+                    .compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    return GatePermit { gate: self.clone() };
+                }
+                // Lost the race to another task; retry.
+                continue;
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    fn set_limit(&self, lim: usize) {
+        self.limit.store(lim.max(1), Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
 }
 
 struct Limiter {
@@ -54,7 +112,7 @@ impl DownloadManager {
         let manager = Arc::new(Self {
             tasks: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
-            semaphore: Mutex::new(Arc::new(tokio::sync::Semaphore::new(max_concurrent))),
+            gate: ConcurrencyGate::new(max_concurrent),
             client: Mutex::new(client),
             data_dir,
             settings,
@@ -62,6 +120,7 @@ impl DownloadManager {
             limiter: tokio::sync::Mutex::new(Limiter::new()),
             progress_stats: Mutex::default(),
             last_persist: Mutex::new(Instant::now()),
+            last_event: Mutex::new(None),
             total_bytes: AtomicU64::new(0),
             id_counter: AtomicU64::new(0),
         });
@@ -83,19 +142,44 @@ impl DownloadManager {
         *self.client.lock() = Arc::new(build_client(&proxy));
     }
 
-    pub fn semaphore(&self) -> Arc<tokio::sync::Semaphore> {
-        self.semaphore.lock().clone()
+    pub fn gate(&self) -> Arc<ConcurrencyGate> {
+        self.gate.clone()
     }
 
-    pub fn resize_semaphore(&self, new_max: usize) {
-        *self.semaphore.lock() = Arc::new(tokio::sync::Semaphore::new(new_max.max(1)));
+    pub fn set_limit(&self, new_max: usize) {
+        self.gate.set_limit(new_max);
+    }
+
+    /// Best-effort emit of the masked task list to the frontend, throttled so
+    /// the frequent segment-progress updates don't flood the event channel.
+    pub fn notify_tasks(&self) {
+        let Some(app) = self.app.lock().clone() else { return };
+        {
+            let mut last = self.last_event.lock();
+            let now = Instant::now();
+            if let Some(t) = *last {
+                if now.duration_since(t) < Duration::from_millis(150) {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
+        let list: Vec<DownloadTask> = self.list().into_iter().map(|t| t.masked()).collect();
+        let _ = app.emit("tasks-changed", list);
     }
 
     pub(crate) fn persist(&self) {
         let tasks: Vec<DownloadTask> = self.tasks.lock().values().cloned().collect();
         let path = self.data_dir.join("tasks.json");
-        if let Ok(s) = serde_json::to_string_pretty(&tasks) {
-            let _ = std::fs::write(path, s);
+        match serde_json::to_string_pretty(&tasks) {
+            Ok(s) => {
+                // Write on a background thread so large task lists don't block
+                // the async runtime.
+                let _ = std::thread::spawn(move || {
+                    let _ = std::fs::write(&path, s);
+                });
+            }
+            Err(_) => {}
         }
     }
 
@@ -105,20 +189,15 @@ impl DownloadManager {
             if let Ok(tasks) = serde_json::from_str::<Vec<DownloadTask>>(&s) {
                 let mut map = self.tasks.lock();
                 let mut changed = false;
-                for mut t in tasks {
-                    // Skip terminal states — don't carry old Completed/Canceled tasks across restarts
-                    if t.status == TaskStatus::Pending
-                        || t.status == TaskStatus::Completed
-                        || t.status == TaskStatus::Canceled
-                    {
-                        changed = true;
-                        continue;
-                    }
-                    if t.status == TaskStatus::Downloading || t.status == TaskStatus::Queued {
-                        t.status = TaskStatus::Paused;
+                for t in tasks {
+                    // Only keep Paused tasks across restarts.
+                    // Completed/Canceled/Error/Downloading/Queued/Pending are all
+                    // discarded to avoid stale entries and accidental re-downloads.
+                    if t.status == TaskStatus::Paused {
+                        map.insert(t.id.clone(), t);
+                    } else {
                         changed = true;
                     }
-                    map.insert(t.id.clone(), t);
                 }
                 drop(map);
                 // Re-persist to flush stale entries from tasks.json
@@ -156,6 +235,8 @@ impl DownloadManager {
         confirm: bool,
         kind: Option<String>,
         quality: Option<String>,
+        write_subs: bool,
+        sub_lang: Option<String>,
     ) -> Result<DownloadTask, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("URL 必须是 http(s) 地址".into());
@@ -204,10 +285,13 @@ impl DownloadManager {
             segment_states: Vec::new(),
             kind: kind.unwrap_or_else(|| "http".into()),
             quality,
+            write_subs,
+            sub_lang,
         };
 
         self.tasks.lock().insert(id.clone(), task.clone());
         self.persist();
+        self.notify_tasks();
 
         if !confirm {
             let mgr = self.clone();
@@ -227,6 +311,8 @@ impl DownloadManager {
         segments: Option<usize>,
         headers: Option<HashMap<String, String>>,
         quality: Option<String>,
+        write_subs: bool,
+        sub_lang: Option<String>,
     ) -> Result<DownloadTask, String> {
         let mut tasks = self.tasks.lock();
         let task = tasks.get_mut(id).ok_or_else(|| "任务不存在".to_string())?;
@@ -262,6 +348,12 @@ impl DownloadManager {
         if let Some(q) = quality {
             task.quality = Some(q);
         }
+        if write_subs {
+            task.write_subs = true;
+        }
+        if sub_lang.is_some() {
+            task.sub_lang = sub_lang;
+        }
         if settings.sort_by_type {
             if let Some(sub) = category_for(&task.filename) {
                 let base = Path::new(&task.save_dir);
@@ -279,6 +371,7 @@ impl DownloadManager {
         let confirmed = task.clone();
         drop(tasks);
         self.persist();
+        self.notify_tasks();
 
         let mgr = self.clone();
         let id = id.to_string();
@@ -292,6 +385,7 @@ impl DownloadManager {
     pub fn reject_pending(&self, id: &str) {
         self.tasks.lock().remove(id);
         self.persist();
+        self.notify_tasks();
     }
 
     pub fn pause(&self, id: &str) -> Result<(), String> {
@@ -306,6 +400,7 @@ impl DownloadManager {
             token.cancel();
         }
         self.persist();
+        self.notify_tasks();
         Ok(())
     }
 
@@ -324,6 +419,7 @@ impl DownloadManager {
         }
         drop(tasks);
         self.persist();
+        self.notify_tasks();
 
         let mgr = Arc::clone(self);
         let id = id.to_string();
@@ -345,6 +441,7 @@ impl DownloadManager {
             token.cancel();
         }
         self.persist();
+        self.notify_tasks();
         Ok(())
     }
 
@@ -352,6 +449,7 @@ impl DownloadManager {
         self.cancel(id).ok();
         self.tasks.lock().remove(id);
         self.persist();
+        self.notify_tasks();
         Ok(())
     }
 
@@ -473,6 +571,7 @@ impl DownloadManager {
         if should_persist {
             self.persist();
         }
+        self.notify_tasks();
     }
 
     pub fn set_status(&self, id: &str, status: TaskStatus, error: Option<String>) {
@@ -491,6 +590,7 @@ impl DownloadManager {
         }
         drop(tasks);
         self.persist();
+        self.notify_tasks();
         if let Some(t) = finished {
             self.on_completed(&t);
         }
@@ -870,23 +970,72 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// 计算文件 SHA-256。若存在 `<文件名>.sha256` 伴生文件,返回 (hash, Some(是否匹配));否则 (hash, None)。
-pub fn verify_hash_file(path: &Path) -> Result<(String, Option<bool>), String> {
-    let actual = sha256_file(path)?;
-    let sidecar = PathBuf::from(format!("{}.sha256", path.display()));
-    if !sidecar.exists() {
-        return Ok((actual, None));
-    }
-    let content = std::fs::read_to_string(&sidecar).map_err(|e| e.to_string())?;
-    let mut expected = None;
-    for tok in content.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '=' || c == '*') {
-        let t = tok.trim().trim_matches('"');
-        if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
-            expected = Some(t.to_lowercase());
+pub fn md5_file(path: &Path) -> Result<String, String> {
+    use md5::{Digest, Md5};
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut r = std::io::BufReader::new(f);
+    let mut hasher = Md5::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = r.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
             break;
         }
+        hasher.update(&buf[..n]);
     }
-    Ok((actual.clone(), Some(expected == Some(actual))))
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Extract a hex hash string of expected length from sidecar content.
+fn extract_hash_from_sidecar(content: &str, expected_len: usize) -> Option<String> {
+    for tok in content.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '=' || c == '*') {
+        let t = tok.trim().trim_matches('"');
+        if t.len() == expected_len && t.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(t.to_lowercase());
+        }
+    }
+    None
+}
+
+/// 计算文件哈希。支持 SHA-256 和 MD5。
+/// 若存在对应的伴生文件 (.sha256 / .md5),自动对比;
+/// 同时也接受 expected_hash 参数用于手动校验。
+pub fn verify_hash_file(
+    path: &Path,
+    algorithm: &str,
+    expected_hash: Option<&str>,
+) -> Result<(String, Option<bool>), String> {
+    let actual = match algorithm {
+        "md5" => md5_file(path)?,
+        _ => sha256_file(path)?,
+    };
+
+    // 1. If caller provided an explicit expected hash, compare directly.
+    if let Some(exp) = expected_hash {
+        let exp = exp.trim().trim_matches('"').trim_start_matches("*").trim_start_matches("=").to_lowercase();
+        let exp = exp.trim_start_matches(|c: char| !c.is_ascii_hexdigit());
+        let matched = exp == actual;
+        return Ok((actual, Some(matched)));
+    }
+
+    // 2. Try sidecar file
+    let (sidecar_ext, hash_len) = match algorithm {
+        "md5" => (".md5", 32),
+        _ => (".sha256", 64),
+    };
+    let sidecar = PathBuf::from(format!("{}{}", path.display(), sidecar_ext));
+    if sidecar.exists() {
+        if let Ok(content) = std::fs::read_to_string(&sidecar) {
+            if let Some(expected) = extract_hash_from_sidecar(&content, hash_len) {
+                let matched = expected == actual;
+                return Ok((actual, Some(matched)));
+            }
+        }
+    }
+
+    // 3. No sidecar found, just return the hash
+    Ok((actual, None))
 }
 
 #[cfg(test)]
@@ -925,14 +1074,28 @@ mod tests {
         std::fs::write(&p, b"hello").unwrap();
         let hash = sha256_file(&p).unwrap();
         assert_eq!(hash.len(), 64);
-        let (h, m) = verify_hash_file(&p).unwrap();
+        // No sidecar, no expected → returns hash only
+        let (h, m) = verify_hash_file(&p, "sha256", None).unwrap();
         assert_eq!(h, hash);
         assert_eq!(m, None);
+        // SHA-256 sidecar matching
         std::fs::write(format!("{}.sha256", p.display()), format!("{}  f.bin", hash)).unwrap();
-        let (_, m) = verify_hash_file(&p).unwrap();
+        let (_, m) = verify_hash_file(&p, "sha256", None).unwrap();
         assert_eq!(m, Some(true));
-        std::fs::write(format!("{}.sha256", p.display()), "deadbeef  f.bin").unwrap();
-        let (_, m) = verify_hash_file(&p).unwrap();
+        // SHA-256 sidecar mismatch (use a valid-length wrong hash)
+        std::fs::write(format!("{}.sha256", p.display()), "0000000000000000000000000000000000000000000000000000000000000000  f.bin").unwrap();
+        let (_, m) = verify_hash_file(&p, "sha256", None).unwrap();
+        assert_eq!(m, Some(false));
+        // MD5 sidecar
+        let md5 = md5_file(&p).unwrap();
+        assert_eq!(md5.len(), 32);
+        std::fs::write(format!("{}.md5", p.display()), format!("{}  f.bin", md5)).unwrap();
+        let (_, m) = verify_hash_file(&p, "md5", None).unwrap();
+        assert_eq!(m, Some(true));
+        // Manual expected hash
+        let (_, m) = verify_hash_file(&p, "sha256", Some(&hash)).unwrap();
+        assert_eq!(m, Some(true));
+        let (_, m) = verify_hash_file(&p, "sha256", Some("0000000000000000000000000000000000000000000000000000000000000000")).unwrap();
         assert_eq!(m, Some(false));
         let _ = std::fs::remove_dir_all(&dir);
     }

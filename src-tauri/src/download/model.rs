@@ -56,6 +56,10 @@ pub struct DownloadTask {
     pub kind: String,
     #[serde(default)]
     pub quality: Option<String>,
+    #[serde(default)]
+    pub write_subs: bool,
+    #[serde(default)]
+    pub sub_lang: Option<String>,
 }
 
 impl DownloadTask {
@@ -116,6 +120,8 @@ mod tests {
             segment_states: vec![],
             kind: "http".into(),
             quality: None,
+            write_subs: false,
+            sub_lang: None,
         };
         let m = task.masked();
         assert_eq!(m.headers.get("Authorization").unwrap(), "Bearer ********");

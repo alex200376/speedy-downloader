@@ -11,14 +11,58 @@ const DEFAULT_BASE = "http://127.0.0.1:47812";
 export const EXTENSION_DOWNLOAD_URL =
   "https://github.com/alex200376/speedy-downloader/releases/latest/download/SpeedDownloader-extension.zip";
 
+const TOKEN_KEY = "sd_api_token";
+
+let cachedToken: string | null = null;
+
+/**
+ * Obtain the per-install local API auth token. In Tauri it is fetched from the
+ * backend once and cached; otherwise (browser dev / pasted token) it is read
+ * from localStorage. `isTauri` is a hoisted function declaration below.
+ */
+export async function getApiToken(): Promise<string> {
+  if (cachedToken) return cachedToken;
+  const stored = localStorage.getItem(TOKEN_KEY);
+  if (stored) {
+    cachedToken = stored;
+    return stored;
+  }
+  if (isTauri()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const t = await invoke<string>("get_api_token");
+      if (t) {
+        localStorage.setItem(TOKEN_KEY, t);
+        cachedToken = t;
+        return t;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return "";
+}
+
+export function clearApiToken() {
+  cachedToken = null;
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 function baseUrl(): string {
   return localStorage.getItem(STORAGE_KEY) || DEFAULT_BASE;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope<T>> {
+  const token = await getApiToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
   const res = await fetch(`${baseUrl()}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers,
   });
   if (!res.ok) {
     return { ok: false, data: null, error: `HTTP ${res.status}` };
@@ -58,6 +102,8 @@ export const api = {
     headers?: Record<string, string>;
     kind?: "http" | "video";
     quality?: string;
+    write_subs?: boolean;
+    sub_lang?: string;
   }): Promise<{ task?: DownloadTask; error?: string }> {
     try {
       const r = await request<DownloadTask>("/api/v1/tasks", {
@@ -105,6 +151,8 @@ export const api = {
       segments?: number;
       headers?: Record<string, string>;
       quality?: string;
+      write_subs?: boolean;
+      sub_lang?: string;
     },
   ): Promise<{ task?: DownloadTask; error?: string }> {
     try {
@@ -118,12 +166,50 @@ export const api = {
     }
   },
 
+  async fetchPlaylist(url: string): Promise<{ videos?: import("./types").PlaylistVideo[]; error?: string }> {
+    try {
+      const r = await request<import("./types").PlaylistVideo[]>("/api/v1/playlist", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      return r.ok ? { videos: r.data ?? [] } : { error: r.error ?? "error" };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  },
+
+  async createBatchTasks(
+    items: { url: string; filename?: string }[],
+  ): Promise<{ tasks?: DownloadTask[]; error?: string }> {
+    try {
+      const r = await request<DownloadTask[]>("/api/v1/tasks/batch", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      return r.ok ? { tasks: r.data ?? [] } : { error: r.error ?? "error" };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  },
+
   async rejectTask(id: string): Promise<boolean> {
     try {
       const r = await request<null>(`/api/v1/tasks/${id}/reject`, { method: "POST" });
       return r.ok;
     } catch {
       return false;
+    }
+  },
+
+  async listSubtitles(url: string): Promise<{ subtitles?: { code: string; name: string; auto: boolean }[]; error?: string }> {
+    try {
+      const r = await request<{ code: string; name: string; auto: boolean }[]>("/api/v1/subtitles", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      return r.ok ? { subtitles: r.data ?? [] } : { error: r.error ?? "error" };
+    } catch (e) {
+      return { error: String(e) };
     }
   },
 
@@ -160,11 +246,17 @@ export const api = {
 
 export async function verifyHash(
   id: string,
+  algorithm?: string,
+  expectedHash?: string,
 ): Promise<import("./types").VerifyHashResult | null> {
   if (!isTauri()) return null;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<import("./types").VerifyHashResult>("verify_hash", { id });
+    return await invoke<import("./types").VerifyHashResult>("verify_hash", {
+      id,
+      algorithm: algorithm ?? null,
+      expectedHash: expectedHash ?? null,
+    });
   } catch {
     return null;
   }
@@ -327,7 +419,24 @@ export function fileIcon(name: string): { kind: string; color: string } {
     pptx: ["sheet", "text-orange-400 bg-orange-500/10"],
     txt: ["fileText", "text-slate-400 bg-slate-500/10"],
     md: ["fileText", "text-slate-400 bg-slate-500/10"],
+    torrent: ["package", "text-orange-400 bg-orange-500/10"],
   };
   const [kind, color] = map[ext] ?? ["file", "text-slate-400 bg-slate-500/10"];
   return { kind, color };
+}
+
+/**
+ * Map known backend error messages to stable i18n keys so the UI can show
+ * localized text regardless of the language the backend message was written in.
+ * Unknown messages return null and the caller falls back to the raw string.
+ */
+export function backendErrorKey(raw: string | null | undefined): string | null {
+  const r = raw || "";
+  if (r.includes("403") || r.includes("被 Cloudflare")) return "error.forbidden";
+  if (r.includes("404")) return "error.notFound";
+  if (r.includes("URL 必须是 http(s)") || r.includes("仅支持 http(s)")) return "error.invalidUrl";
+  if (r.includes("连接停滞无数据") || r.includes("stalled") || r.includes("timeout")) return "error.stalled";
+  if (r === "cancelled" || r.includes("已取消")) return "error.cancelled";
+  if (r.includes("任务不存在")) return "error.taskMissing";
+  return null;
 }

@@ -105,8 +105,15 @@ pub async fn check_update() -> Result<UpdateInfo, String> {
 
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
+    // Only allow http(s) URLs to prevent shell injection via cmd /C start.
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "仅支持 http(s) 链接".to_string())?;
+    if !(parsed.scheme() == "http" || parsed.scheme() == "https") {
+        return Err("仅支持 http(s) 链接".into());
+    }
     #[cfg(target_os = "windows")]
     {
+        // Pass the URL as a single argument; scheme validation above blocks
+        // injected commands (; | & etc. are not valid in http(s) URLs).
         std::process::Command::new("cmd")
             .args(["/C", "start", "", &url])
             .spawn()
@@ -273,16 +280,34 @@ pub fn get_native_info(app: AppHandle) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn verify_hash(id: String, app: AppHandle) -> Result<serde_json::Value, String> {
+pub fn get_api_token(app: AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let token = crate::server::load_or_create_token(&dir);
+    Ok(token)
+}
+
+#[tauri::command]
+pub fn verify_hash(
+    id: String,
+    algorithm: Option<String>,
+    expected_hash: Option<String>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
     let manager: tauri::State<Arc<crate::download::DownloadManager>> = app.state();
     let task = manager.get(&id).ok_or_else(|| "任务不存在".to_string())?;
     let path = Path::new(&task.file_path);
     if !path.exists() {
         return Err("文件不存在".into());
     }
-    let (hash, matched) = crate::download::manager::verify_hash_file(path)?;
+    let algo = algorithm.unwrap_or_else(|| "sha256".into());
+    let (hash, matched) = crate::download::manager::verify_hash_file(
+        path,
+        &algo,
+        expected_hash.as_deref(),
+    )?;
     Ok(serde_json::json!({
-        "sha256": hash,
+        "hash": hash,
+        "algorithm": algo,
         "matched": matched,
         "filename": task.filename,
     }))

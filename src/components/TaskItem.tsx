@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { formatBytes, formatEta, formatSpeed, fileIcon, openFolder, verifyHash } from "../api";
+import { formatBytes, formatEta, formatSpeed, fileIcon, openFolder, backendErrorKey } from "../api";
 import { useTaskStore } from "../store/taskStore";
 import { useToastStore } from "../store/toastStore";
 import type { DownloadTask } from "../types";
 import ProgressBar from "./ProgressBar";
+import VerifyHashDialog from "./VerifyHashDialog";
 import {
   PauseIcon,
   PlayIcon,
@@ -68,6 +69,7 @@ export default function TaskItem({ task }: Props) {
   const refreshedAt = useTaskStore((s) => s.refreshedAt);
   const toast = useToastStore((s) => s.push);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [showVerify, setShowVerify] = useState(false);
 
   const icon = fileIcon(task.filename);
   const st = STATUS_STYLE[task.status] ?? STATUS_STYLE.Queued;
@@ -100,25 +102,10 @@ export default function TaskItem({ task }: Props) {
   const handleOpen = async () => {
     if (!(await openFolder(task.file_path))) toast("error", t("toast.error"));
   };
-  const handleVerify = async () => {
-    const r = await verifyHash(task.id);
-    if (!r) {
-      toast("error", t("toast.error"));
-      return;
-    }
-    if (r.matched === null) {
-      toast("info", `${t("task.hash")}: ${r.sha256.slice(0, 16)}…`);
-    } else if (r.matched) {
-      toast("success", `${t("task.hashMatched")}: ${r.sha256.slice(0, 16)}…`);
-    } else {
-      toast("error", `${t("task.hashMismatch")}: ${r.sha256.slice(0, 16)}…`);
-    }
-  };
-
   const active = task.status === "Downloading";
 
   return (
-    <div className="group animate-slide-in rounded-lg border border-[var(--border)] bg-[var(--panel)] p-3.5 transition hover:border-[var(--text-2)]/40 hover:bg-[var(--panel-2)]/60">
+    <div className="group animate-slide-in rounded-lg border border-[var(--border)] bg-[var(--panel)] p-2.5 sm:p-3.5 transition hover:border-[var(--text-2)]/40 hover:bg-[var(--panel-2)]/60">
       <div className="flex items-start gap-3.5">
         <div
           className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${icon.color}`}
@@ -168,18 +155,20 @@ export default function TaskItem({ task }: Props) {
                 {t("title.eta")} {formatEta(remaining, live.speed)}
               </span>
             )}
-            {task.status !== "Completed" && (
-              <span className="tabular-nums text-[var(--muted)]">
-                {t("task.segments", { n: task.segments })}
-              </span>
-            )}
+{task.status !== "Completed" && task.kind !== "video" && (
+  <span className="tabular-nums text-[var(--muted)]">
+    {t("task.segments", { n: task.segments })}
+  </span>
+)}
             {task.status === "Error" && task.error && (
-              <span className="truncate text-rose-400">{task.error}</span>
+              <span className="truncate text-rose-400">
+                {backendErrorKey(task.error) ? t(backendErrorKey(task.error)!) : task.error}
+              </span>
             )}
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
+        <div className="flex shrink-0 items-center gap-1 opacity-100 sm:opacity-0 sm:transition sm:group-hover:opacity-100">
           {task.status === "Downloading" || task.status === "Queued" ? (
             task.kind === "video" ? null : (
               <IconBtn title={t("action.pause")} onClick={handlePause}>
@@ -210,7 +199,7 @@ export default function TaskItem({ task }: Props) {
             <FolderIcon width={15} height={15} />
           </IconBtn>
           {task.status === "Completed" && (
-            <IconBtn title={t("action.verify")} onClick={handleVerify}>
+            <IconBtn title={t("action.verify")} onClick={() => setShowVerify(true)}>
               <ShieldIcon width={15} height={15} />
             </IconBtn>
           )}
@@ -224,32 +213,48 @@ export default function TaskItem({ task }: Props) {
           </IconBtn>
         </div>
       </div>
+      <VerifyHashDialog
+        open={showVerify}
+        taskId={task.id}
+        filename={task.filename}
+        onClose={() => setShowVerify(false)}
+      />
     </div>
   );
 }
 
 function useLiveProgress(task: DownloadTask, refreshedAt: number) {
   const [now, setNow] = useState(() => Date.now());
-  const last = useRef(-1);
-  const active = task.status === "Downloading" && task.speed > 0;
+  const active = task.status === "Downloading";
 
   useEffect(() => {
     if (!active) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    const id = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(id);
   }, [active]);
 
-  const base = task.total_size ? Math.min(task.total_size, task.downloaded) : task.downloaded;
+  // Always start from the latest backend-reported values.
+  const base = task.total_size
+    ? Math.min(task.total_size, task.downloaded)
+    : task.downloaded;
+
   let value = base;
-  if (active && task.total_size) {
+
+  // Smoothly extrapolate forward between backend events so the bar appears
+  // to move continuously.  Only extrapolate when we have a positive speed
+  // and a valid total_size, and cap to 5 s to avoid large overshoots.
+  if (active && task.total_size && task.speed > 0) {
     const elapsed = (now - refreshedAt) / 1000;
-    if (elapsed > 0 && elapsed <= 2) {
+    if (elapsed > 0 && elapsed <= 5) {
       value = Math.min(task.total_size, base + task.speed * elapsed);
     }
   }
-  if (last.current > 0) value = Math.max(value, last.current);
-  value = Math.min(task.total_size ?? value, value);
-  last.current = value;
+
+  // Never exceed total_size
+  if (task.total_size) {
+    value = Math.min(task.total_size, value);
+  }
+
   return { downloaded: value, speed: task.speed };
 }
 

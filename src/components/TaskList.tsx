@@ -15,7 +15,7 @@ export default function TaskList({ onNew }: Props) {
 
   if (tasks.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 py-20 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 py-10 sm:py-20 text-center">
         <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel-2)] text-[var(--muted)]">
           <DownloadIcon width={26} height={26} />
         </div>
@@ -31,7 +31,7 @@ export default function TaskList({ onNew }: Props) {
   }
 
   return (
-    <div className="flex-1 space-y-3 overflow-y-auto px-6 py-5">
+    <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-6 sm:py-5">
       {stats.activeSpeed > 0 && <SpeedChart speed={stats.activeSpeed} />}
       {tasks.map((task) => (
         <TaskItem key={task.id} task={task} />

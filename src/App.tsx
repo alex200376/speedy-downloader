@@ -8,6 +8,7 @@ import { PlusIcon, SearchIcon, CloudIcon } from "./components/icons";
 import Sidebar from "./components/Sidebar";
 import TaskList from "./components/TaskList";
 import NewDownloadDialog from "./components/NewDownloadDialog";
+import PlaylistDialog from "./components/PlaylistDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import UpdateDialog from "./components/UpdateDialog";
 import WindowControls from "./components/WindowControls";
@@ -32,8 +33,18 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
+  const [showPlaylist, setShowPlaylist] = useState(false);
+  const [playlistUrl, setPlaylistUrl] = useState("");
   const [droppedUrl, setDroppedUrl] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    const check = () => setSidebarCollapsed(window.innerWidth < 700);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   useEffect(() => {
     loadSettings();
@@ -42,17 +53,37 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    let unlisten: (() => void) | undefined;
+    let unlistenGrab: (() => void) | undefined;
+    let unlistenPlaylist: (() => void) | undefined;
+    let cancelled = false;
     import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen("grab-request", (e: { payload: import("./types").GrabRequest }) => {
-          pushGrab(e.payload);
-        }),
-      )
-      .then((fn) => {
-        unlisten = fn;
-      });
-    return () => unlisten?.();
+      .then(async ({ listen }) => {
+        const [uGrab, uPlaylist] = await Promise.all([
+          listen("grab-request", (e: { payload: import("./types").GrabRequest }) => {
+            if (!cancelled) pushGrab(e.payload);
+          }),
+          listen("playlist-request", (e: { payload: string }) => {
+            if (cancelled) return;
+            setPlaylistUrl(e.payload);
+            setShowPlaylist(true);
+          }),
+        ]);
+        // If the effect was cleaned up while the dynamic import was pending,
+        // unregister immediately rather than leaking the listeners.
+        if (cancelled) {
+          uGrab?.();
+          uPlaylist?.();
+          return;
+        }
+        unlistenGrab = uGrab;
+        unlistenPlaylist = uPlaylist;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlistenGrab?.();
+      unlistenPlaylist?.();
+    };
   }, [pushGrab]);
 
   useEffect(() => {
@@ -107,14 +138,14 @@ export default function App() {
       {/* Custom title bar */}
       <div className="flex shrink-0 h-8 pl-3 border-b border-[var(--border-soft)] bg-[var(--bg)]">
         <span className="flex items-center text-[11px] font-semibold text-[var(--muted)] select-none">
-          SpeedDownloader
+          <span className="hidden sm:inline">SpeedDownloader</span>
         </span>
         <div className="flex-1" data-tauri-drag-region />
         <WindowControls />
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-      <Sidebar onNew={openNew} onSettings={() => setShowSettings(true)} />
+      <Sidebar collapsed={sidebarCollapsed} onNew={openNew} onSettings={() => setShowSettings(true)} onPlaylist={() => setShowPlaylist(true)} />
 
       <main className="relative flex flex-1 flex-col overflow-hidden">
           {dragOver && (
@@ -124,8 +155,8 @@ export default function App() {
               </div>
             </div>
           )}
-          <header className="flex shrink-0 items-center gap-4 border-b border-[var(--border-soft)] bg-[var(--bg-2)]/50 px-6 py-3">
-          <div className="relative w-72">
+          <header className="flex shrink-0 items-center justify-between gap-2.5 border-b border-[var(--border-soft)] bg-[var(--bg-2)]/50 px-3 py-2.5 sm:gap-4 sm:px-5 sm:py-3">
+          <div className="relative min-w-0 flex-1 max-w-72">
             <SearchIcon
               width={15}
               height={15}
@@ -139,32 +170,30 @@ export default function App() {
             />
           </div>
 
-          <div className="flex-1" />
-
           <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--text-2)]">
             <span
               className={`h-1.5 w-1.5 rounded-full ${
                 connected ? "bg-emerald-400" : "bg-rose-400"
               }`}
             />
-            {connected ? "Online" : "Offline"}
+            <span className="hidden sm:inline">{connected ? "Online" : "Offline"}</span>
           </div>
 
-          <div className="hidden text-[12px] font-semibold tabular-nums text-[var(--text-2)] md:block">
+          <div className="ml-auto hidden text-[12px] font-semibold tabular-nums text-[var(--text-2)] lg:block">
             {formatSpeed(stats.activeSpeed)}
           </div>
 
           <button
             onClick={() => setShowUpdate(true)}
             title={t("update.title")}
-            className="icon-btn"
+            className="icon-btn shrink-0"
           >
             <CloudIcon width={17} height={17} />
           </button>
 
-          <button onClick={openNew} className="btn btn-primary">
+          <button onClick={openNew} className="btn btn-primary shrink-0">
             <PlusIcon width={15} height={15} />
-            {t("header.newDownload")}
+            <span className="hidden sm:inline">{t("header.newDownload")}</span>
           </button>
         </header>
 
@@ -178,6 +207,7 @@ export default function App() {
         grab={grab}
         onClose={closeNew}
       />
+      <PlaylistDialog open={showPlaylist} initialUrl={playlistUrl} onClose={() => { setShowPlaylist(false); setPlaylistUrl(""); }} />
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
       <UpdateDialog open={showUpdate} onClose={() => setShowUpdate(false)} />
       <Toasts />

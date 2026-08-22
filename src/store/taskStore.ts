@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api } from "../api";
+import { api, isTauri } from "../api";
 import type { DownloadTask, FilterKey } from "../types";
 
 interface TaskState {
@@ -35,7 +35,24 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   startPolling: () => {
     if (timer) return;
     get().refresh();
-    timer = setInterval(() => get().refresh(), 600);
+    // In Tauri the backend pushes throttled "tasks-changed" snapshots, so the
+    // UI updates in near-real-time. A slow fallback poll still runs (and is the
+    // only mechanism in browser-dev mode) to pick up missed events / health.
+    if (isTauri()) {
+      (async () => {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          await listen<DownloadTask[]>("tasks-changed", (e) => {
+            if (Array.isArray(e.payload)) {
+              set({ tasks: e.payload, refreshedAt: Date.now() });
+            }
+          });
+        } catch {
+          /* keep fallback polling */
+        }
+      })();
+    }
+    timer = setInterval(() => get().refresh(), 5000);
   },
 
   setFilter: (f) => set({ filter: f }),

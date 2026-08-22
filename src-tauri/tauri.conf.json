@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "SpeedDownloader 极速下载器",
-        "width": 1120,
-        "height": 740,
-        "minWidth": 940,
-        "minHeight": 600,
+        "width": 800,
+        "height": 540,
+        "minWidth": 580,
+        "minHeight": 420,
         "center": true,
         "resizable": true,
         "decorations": false

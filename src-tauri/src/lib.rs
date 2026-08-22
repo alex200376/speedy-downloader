@@ -17,6 +17,9 @@ pub fn run() {
             let data_dir = app.path().app_data_dir().expect("no app data dir");
             std::fs::create_dir_all(&data_dir).ok();
 
+            // Ensure the local API auth token exists before the server starts.
+            server::load_or_create_token(&data_dir);
+
             let settings_path = data_dir.join("settings.json");
             let settings = Arc::new(parking_lot::RwLock::new(settings::load(&settings_path)));
             settings::save(&settings_path, &settings.read().clone());
@@ -46,6 +49,7 @@ pub fn run() {
             commands::open_folder,
             commands::choose_folder,
             commands::get_native_info,
+            commands::get_api_token,
             commands::prepare_extension,
             commands::open_extensions_page,
             commands::check_update,
@@ -53,6 +57,8 @@ pub fn run() {
             commands::verify_hash,
             crate::download::ytdlp::install_video_tools,
             crate::download::ytdlp::get_video_tools_status,
+            crate::download::aria2::install_aria2,
+            crate::download::aria2::get_aria2_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
