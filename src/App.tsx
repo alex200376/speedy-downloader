@@ -4,7 +4,7 @@ import { useTaskStore, useTaskStats } from "./store/taskStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { useGrabStore } from "./store/grabStore";
 import { isTauri, formatSpeed } from "./api";
-import { PlusIcon, SearchIcon, CloudIcon } from "./components/icons";
+import { SearchIcon, CloudIcon } from "./components/icons";
 import Sidebar from "./components/Sidebar";
 import TaskList from "./components/TaskList";
 import NewDownloadDialog from "./components/NewDownloadDialog";
@@ -191,13 +191,9 @@ export default function App() {
             <CloudIcon width={17} height={17} />
           </button>
 
-          <button onClick={openNew} className="btn btn-primary shrink-0">
-            <PlusIcon width={15} height={15} />
-            <span className="hidden sm:inline">{t("header.newDownload")}</span>
-          </button>
         </header>
 
-        <TaskList onNew={openNew} />
+        <TaskList />
       </main>
       </div>
 

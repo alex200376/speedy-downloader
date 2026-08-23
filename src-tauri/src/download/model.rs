@@ -53,6 +53,8 @@ pub struct DownloadTask {
     pub headers: HashMap<String, String>,
     pub segment_states: Vec<SegmentState>,
     #[serde(default)]
+    pub completed_bytes: u64,
+    #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub quality: Option<String>,
@@ -118,6 +120,7 @@ mod tests {
             filename_from_user: false,
             headers,
             segment_states: vec![],
+            completed_bytes: 0,
             kind: "http".into(),
             quality: None,
             write_subs: false,

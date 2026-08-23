@@ -42,6 +42,7 @@ export interface DownloadTask {
   supports_ranges: boolean;
   filename_from_user: boolean;
   segment_states: SegmentState[];
+  completed_bytes: number;
   kind?: "http" | "video";
   quality?: string | null;
   write_subs?: boolean;

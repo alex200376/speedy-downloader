@@ -298,7 +298,14 @@ pub async fn run_task(manager: Arc<DownloadManager>, id: String) {
         None => return,
     };
 
-    if task.kind == "video" {
+    // Streaming sites must go through yt-dlp even if the caller did not
+    // flag kind=video (otherwise the plain HTTP engine saves the watch
+    // page HTML as the "downloaded file").
+    let url_l = task.url.to_ascii_lowercase();
+    let looks_video = task.kind == "video"
+        || url_l.contains("youtube.com/")
+        || url_l.contains("youtu.be/");
+    if looks_video {
         ytdlp::run_ytdlp_task(manager, id, task.url, task.quality.clone()).await;
         return;
     }

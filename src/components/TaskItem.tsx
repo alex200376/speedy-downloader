@@ -74,7 +74,7 @@ export default function TaskItem({ task }: Props) {
   const icon = fileIcon(task.filename);
   const st = STATUS_STYLE[task.status] ?? STATUS_STYLE.Queued;
   const live = useLiveProgress(task, refreshedAt);
-  const totalSize = task.total_size && task.total_size > 0 ? task.total_size : null;
+  const totalSize = live.totalSize;
   const downloaded = Number.isFinite(live.downloaded) && live.downloaded > 0 ? live.downloaded : 0;
   const speed = Number.isFinite(live.speed) && live.speed > 0 ? live.speed : 0;
   const progress = totalSize ? downloaded / totalSize : null;
@@ -144,7 +144,7 @@ export default function TaskItem({ task }: Props) {
             </span>
             {progress !== null && (
               <span className="font-semibold tabular-nums text-[var(--text-2)]">
-                {(progress * 100).toFixed(1)}%
+                {(Math.min(progress, 1) * 100).toFixed(1)}%
               </span>
             )}
             {active && (
@@ -235,34 +235,26 @@ function useLiveProgress(task: DownloadTask, refreshedAt: number) {
     return () => clearInterval(id);
   }, [active]);
 
-  // Always start from the latest backend-reported values.
-  const base = task.total_size
-    ? Math.min(task.total_size, task.downloaded)
-    : task.downloaded;
+  // Backend already reports cumulative bytes across multi-pass downloads.
+  const totalSize = task.total_size && task.total_size > 0 ? task.total_size : null;
+  const base = totalSize ? Math.min(totalSize, task.downloaded) : task.downloaded;
 
   let value = base;
 
-  // Smoothly extrapolate forward between backend events so the bar appears
-  // to move continuously. Use time-based progress when speed is unavailable
-  // to handle cases where speed measurement lags or is temporarily zero.
-  if (active && task.total_size) {
+  if (active && totalSize) {
     const elapsed = (now - refreshedAt) / 1000;
     if (elapsed > 0 && elapsed <= 5) {
-      // Extrapolate based on speed if available and positive
       if (task.speed > 0) {
-        value = Math.min(task.total_size, base + task.speed * elapsed);
+        value = Math.min(totalSize, base + task.speed * elapsed);
       }
-      // If speed is 0 or unavailable, still update based on downloaded value
-      // This handles cases where speed measurement is delayed but download progresses
     }
   }
 
-  // Never exceed total_size
-  if (task.total_size) {
-    value = Math.min(task.total_size, value);
+  if (totalSize) {
+    value = Math.min(totalSize, value);
   }
 
-  return { downloaded: value, speed: task.speed };
+  return { downloaded: value, speed: task.speed, totalSize };
 }
 
 function IconBtn({

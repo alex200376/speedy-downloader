@@ -17,6 +17,21 @@ pub fn run() {
             let data_dir = app.path().app_data_dir().expect("no app data dir");
             std::fs::create_dir_all(&data_dir).ok();
 
+            // Log panics to a file — GUI apps have no console, so a crash
+            // would otherwise be completely invisible.
+            {
+                let log_path = data_dir.join("panic.log");
+                std::panic::set_hook(Box::new(move |info| {
+                    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                    let msg = format!("[{ts}] PANIC: {info}\n");
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                        use std::io::Write;
+                        let _ = f.write_all(msg.as_bytes());
+                    }
+                    eprintln!("{msg}");
+                }));
+            }
+
             // Ensure the local API auth token exists before the server starts.
             server::load_or_create_token(&data_dir);
 

@@ -1,4 +1,4 @@
-use crate::download::manager::DownloadManager;
+﻿use crate::download::manager::DownloadManager;
 use crate::download::model::TaskStatus;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::process::Command as TokioCommand;
+use tokio::sync::Mutex;
 use std::io::Write as _;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
@@ -240,6 +241,8 @@ fn needs_cookies_retry(err_msg: &str) -> bool {
         || lower.contains("age")
         || lower.contains("unable to extract")
         || lower.contains("extraction")
+        || lower.contains("decrypt")
+        || lower.contains("dpapi")
 }
 
 /// Build the yt-dlp argument list.
@@ -251,20 +254,22 @@ fn build_ytdlp_args(
     proxy: &str,
     limit_kbps: u64,
     ffmpeg_path: Option<&Path>,
-    with_cookies: bool,
+    cookie_browser: Option<&str>,
     write_subs: bool,
     sub_lang: Option<&str>,
 ) -> Vec<String> {
+    let is_youtube = url.contains("youtube.com") || url.contains("youtu.be");
     let output_template = format!("{}\\%(title).120B [%(id)s].%(ext)s", save_dir);
     let mut args: Vec<String> = vec![
         "--newline".into(),
+        "--progress".into(),
               "--no-playlist".into(),
         "-o".into(),
         output_template,
         "-f".into(),
         format_selector.into(),
         "-N".into(),
-        "2".into(),
+        if is_youtube { "1".into() } else { "2".into() },
         "--fragment-retries".into(),
         "20".into(),
         "--retry-sleep".into(),
@@ -291,9 +296,9 @@ fn build_ytdlp_args(
         args.push(format!("{}K", limit_kbps));
     }
 
-    if with_cookies {
+    if let Some(browser) = cookie_browser {
         args.push("--cookies-from-browser".into());
-        args.push("chrome".into());
+        args.push(browser.into());
     }
 
     if write_subs {
@@ -312,24 +317,40 @@ fn build_ytdlp_args(
 /// Spawn yt-dlp and run its I/O loop. Returns Ok(()) on success,
 /// or Err(error_message) on failure.
 async fn run_ytdlp_child(
-    mgr: &DownloadManager,
+    mgr: Arc<DownloadManager>,
     tid: &str,
     data_dir: &Path,
     args: Vec<String>,
     token: &CancellationToken,
 ) -> Result<(), String> {
-    let mut child = TokioCommand::new(ytdlp_path(data_dir))
+    let child = TokioCommand::new(ytdlp_path(data_dir))
         .args(&args)
         .env("PYTHONUNBUFFERED", "1")
+        // No console in a GUI app: give stdin /dev/null so any stray
+        // interactive prompt fails fast instead of blocking forever
+        // (which left tasks stuck at "Downloading" 100%).
+        .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .creation_flags(0x08000000)
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("Failed to start yt-dlp: {}", e))?;
 
-    let stderr = child.stderr.take().ok_or("yt-dlp did not provide stderr")?;
-    let stdout = child.stdout.take().ok_or("yt-dlp did not provide stdout")?;
+    let child = Arc::new(Mutex::new(child));
+
+    // Spawn a task to wait on the child process so we don't rely solely
+    // on pipe EOF (which may never come if grandchildren like ffmpeg
+    // inherited the handles).
+    let (wait_tx, mut wait_rx) = tokio::sync::oneshot::channel();
+    let child_for_wait = Arc::clone(&child);
+    tokio::spawn(async move {
+        let mut guard = child_for_wait.lock().await;
+        let status = guard.wait().await;
+        let _ = wait_tx.send(status);
+    });
+
+    let stderr = child.lock().await.stderr.take().ok_or("yt-dlp did not provide stderr")?;
+    let stdout = child.lock().await.stdout.take().ok_or("yt-dlp did not provide stdout")?;
 
     let mut stderr_lines = BufReader::new(stderr).lines();
     let mut stdout_lines = BufReader::new(stdout).lines();
@@ -338,13 +359,145 @@ async fn run_ytdlp_child(
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut captured_error: Option<String> = None;
+    let mut exit_status: Option<Result<std::process::ExitStatus, std::io::Error>> = None;
+
+    // Shared activity clock (ms since epoch): bumped by both the output
+    // reader and the disk poller so the stall timeout doesn't kill healthy
+    // downloads that simply produce no console output.
+    fn now_millis() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+    let activity_ms = Arc::new(std::sync::atomic::AtomicU64::new(now_millis()));
+
+    // Fallback progress via directory scanning.  yt-dlp suppresses progress
+    // output in GUI (no-console) contexts, so we watch the on-disk files to
+    // keep the UI moving.  Uses a sequential single-pass model: track only
+    // the largest active file; when a pass finishes (its file disappears),
+    // commit its peak so progress stays monotonic and never exceeds the
+    // real merged-file total.
+    let poller_mgr = mgr.clone();
+    let poller_tid = tid.to_string();
+    let poller_activity = Arc::clone(&activity_ms);
+    let _poller = tokio::spawn(async move {
+        use std::collections::HashMap;
+        let mut acc: u64 = 0;
+        let mut last_max: u64 = 0;
+        let mut prev_emitted: u64 = 0;
+        let mut prev_tick = Instant::now();
+        let mut sm_speed: f64 = 0.0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let (status, save_dir, url) = {
+                let tasks = poller_mgr.tasks.lock();
+                match tasks.get(&poller_tid) {
+                    Some(t) if t.status == TaskStatus::Downloading => {
+                        (true, t.save_dir.clone(), t.url.clone())
+                    }
+                    _ => break,
+                }
+            };
+            if !status || save_dir.is_empty() {
+                continue;
+            }
+
+            let vid = extract_video_id(&url);
+            let mut current: HashMap<String, u64> = HashMap::new();
+            if let Ok(entries) = std::fs::read_dir(&save_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if !meta.is_file() { continue; }
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        let ext_ok = name.ends_with(".mp4")
+                            || name.ends_with(".mkv")
+                            || name.ends_with(".webm")
+                            || name.ends_with(".m4a")
+                            || name.ends_with(".mp3")
+                            || name.ends_with(".ogg")
+                            || name.ends_with(".opus")
+                            || name.ends_with(".flac")
+                            || name.ends_with(".wav")
+                            || name.ends_with(".aac")
+                            || name.ends_with(".avi")
+                            || name.ends_with(".mov")
+                            || name.ends_with(".flv")
+                            || name.ends_with(".ts")
+                            || name.ends_with(".m4v")
+                            || name.ends_with(".3gp")
+                            || name.ends_with(".part");
+                        if !ext_ok { continue; }
+                        let path = entry.path().to_string_lossy().to_string();
+                        let matches = if !vid.is_empty() {
+                            path.contains(&vid) || name.contains(&vid)
+                        } else {
+                            true
+                        };
+                        if !matches { continue; }
+                        current.insert(path.clone(), meta.len());
+                    }
+                }
+            }
+
+            // Sequential-pass tracking: if the largest file shrank or vanished,
+            // the previous pass finished ??commit its peak once.
+            let cur_max = current.values().copied().max().unwrap_or(0);
+            if cur_max < last_max {
+                acc += last_max;
+            }
+            last_max = cur_max;
+
+            let known_total = {
+                let tasks = poller_mgr.tasks.lock();
+                tasks.get(&poller_tid).and_then(|t| t.total_size).filter(|&x| x > 0)
+            };
+            let raw = acc + cur_max;
+            let capped = match known_total {
+                Some(ts) => raw.min(ts),
+                None => raw,
+            };
+
+            // Exponential moving average speed from emitted-byte deltas.
+            let now_tick = Instant::now();
+            let dt = now_tick.duration_since(prev_tick).as_secs_f64().max(0.05);
+            let inst = (capped.saturating_sub(prev_emitted)) as f64 / dt;
+            sm_speed = sm_speed * 0.6 + inst * 0.4;
+            prev_emitted = capped;
+            prev_tick = now_tick;
+
+            // File grew since last tick ??download is alive.
+            if inst > 1.0 {
+                poller_activity.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+            }
+
+            let mut updated = false;
+            {
+                let mut tasks = poller_mgr.tasks.lock();
+                if let Some(t) = tasks.get_mut(&poller_tid) {
+                    if capped > t.downloaded {
+                        t.downloaded = capped;
+                        updated = true;
+                    }
+                    if (t.speed - sm_speed).abs() > 512.0 || updated {
+                        t.speed = sm_speed;
+                        updated = true;
+                    }
+                }
+            }
+            if updated {
+                poller_mgr.notify_tasks();
+            }
+        }
+    });
 
     while !stdout_done || !stderr_done {
         tokio::select! {
             out_line = stdout_lines.next_line(), if !stdout_done => {
                 match out_line {
                     Ok(Some(ref l)) => {
-                        process_ytdlp_line(l, mgr, tid, &mut last_persist);
+                        activity_ms.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+                        process_ytdlp_line(l, &mgr, tid, &mut last_persist);
                     }
                     Ok(None) | Err(_) => { stdout_done = true; }
                 }
@@ -352,29 +505,51 @@ async fn run_ytdlp_child(
             err_line = stderr_lines.next_line(), if !stderr_done => {
                 match err_line {
                     Ok(Some(ref l)) => {
+                        activity_ms.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
                         let cleaned = strip_ansi_escapes(l);
                         let cleaned = cleaned.trim();
                         if cleaned.starts_with("ERROR:") {
                             let err_msg = cleaned.strip_prefix("ERROR:").unwrap_or(cleaned).trim().to_string();
                             captured_error = Some(err_msg);
-                            let _ = child.kill().await;
+                            let _ = child.lock().await.kill().await;
                             break;
                         }
-                        process_ytdlp_line(l, mgr, tid, &mut last_persist);
+                        process_ytdlp_line(l, &mgr, tid, &mut last_persist);
                     }
                     Ok(None) | Err(_) => { stderr_done = true; }
                 }
             }
             _ = token.cancelled() => {
-                let _ = child.kill().await;
+                let _ = child.lock().await.kill().await;
                 mgr.set_status(tid, TaskStatus::Canceled, None);
                 mgr.persist();
                 return Err("canceled".into());
             }
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                let last = activity_ms.load(std::sync::atomic::Ordering::Relaxed);
+                if now_millis().saturating_sub(last) >= 120_000 {
+                    let _ = child.lock().await.kill().await;
+                    return Err("Download stalled - no progress for 2 minutes".into());
+                }
+            }
+            res = &mut wait_rx => {
+                // Child process has exited. Stop waiting for pipe EOF since
+                // grandchildren (e.g. ffmpeg) may have inherited the handles
+                // and keep the pipes open indefinitely.
+                exit_status = Some(res.unwrap_or_else(|_| {
+                    Err(std::io::Error::other("child wait task dropped"))
+                }));
+                stdout_done = true;
+                stderr_done = true;
+            }
         }
     }
 
-    let exit_status = child.wait().await;
+    let exit_status = match exit_status {
+        Some(s) => s,
+        // Loop ended via pipe EOF; reap the (already-exited) process.
+        None => child.lock().await.wait().await,
+    };
 
     if let Some(err_msg) = captured_error {
         return Err(err_msg);
@@ -404,7 +579,7 @@ pub async fn run_ytdlp_task(
     }
 
     // NOTE: gate permit is already held by the caller (engine::run_task).
-    // Do NOT acquire another permit here — it would deadlock when
+    // Do NOT acquire another permit here ??it would deadlock when
     // max_concurrent == 1 or waste a slot at higher limits.
 
     let task = match manager.get(&id) {
@@ -425,13 +600,95 @@ pub async fn run_ytdlp_task(
     let has_ffmpeg = ffmpeg.exists();
     let write_subs = task.write_subs;
     let sub_lang = task.sub_lang.clone();
+    let _is_youtube = url.contains("youtube.com") || url.contains("youtu.be");
 
     manager.set_status(&id, TaskStatus::Downloading, None);
+
+    // Size probe: run a lightweight --dump-json in parallel so the UI can show
+    // a real percentage even when yt-dlp suppresses progress output in GUI
+    // (no-console) contexts.  Regular print output reaches the pipe fine; only
+    // the progress renderer is console-gated.
+    {
+        let pmgr = manager.clone();
+        let pid = id.clone();
+        let purl = url.clone();
+        let pfmt = format_selector.clone();
+        let pproxy = proxy.clone();
+        tokio::spawn(async move {
+            let mut pa: Vec<String> = vec![
+                "--no-playlist".into(),
+                "-f".into(),
+                pfmt,
+                "--dump-json".into(),
+            ];
+            if !pproxy.is_empty() && pproxy != "system" && pproxy != "none" {
+                pa.push("--proxy".into());
+                pa.push(pproxy);
+            }
+            pa.push(purl);
+
+            let attempt = TokioCommand::new(ytdlp_path(&pmgr.data_dir))
+                .args(&pa)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .output();
+            let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(45), attempt).await else {
+                return;
+            };
+            let txt = String::from_utf8_lossy(&out.stdout);
+            for line in txt.lines() {
+                let l = line.trim();
+                if !l.starts_with('{') {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
+                    continue;
+                };
+                let mut total: u64 = 0;
+                let mut found = false;
+                if let Some(fmts) = v.get("requested_formats").and_then(|x| x.as_array()) {
+                    for f in fmts {
+                        let sz = f
+                            .get("filesize")
+                            .and_then(|x| x.as_u64())
+                            .or_else(|| f.get("filesize_approx").and_then(|x| x.as_u64()));
+                        if let Some(s) = sz {
+                            total += s;
+                            found = true;
+                        }
+                    }
+                } else {
+                    if let Some(s) = v.get("filesize").and_then(|x| x.as_u64()) {
+                        total = s;
+                        found = true;
+                    } else if let Some(s) = v.get("filesize_approx").and_then(|x| x.as_u64()) {
+                        total = s;
+                        found = true;
+                    }
+                }
+                if found && total > 0 {
+                    let mut tasks = pmgr.tasks.lock();
+                    if let Some(t) = tasks.get_mut(&pid) {
+                        if t.status == TaskStatus::Downloading && t.total_size.is_none() {
+                            t.total_size = Some(total);
+                        }
+                    }
+                    drop(tasks);
+                    pmgr.notify_tasks();
+                }
+                break;
+            }
+        });
+    }
 
     let token = CancellationToken::new();
     manager.register_running(&id, token.clone());
 
-    // First attempt: without browser cookies
+    // First attempt: without browser cookies.  If yt-dlp reports an
+    // auth / consent / decrypt error, retry with Firefox cookies
+    // (avoids Chrome DPAPI issues in GUI contexts).
     let args = build_ytdlp_args(
         &save_dir,
         &format_selector,
@@ -440,12 +697,12 @@ pub async fn run_ytdlp_task(
         &proxy,
         limit_kbps,
         has_ffmpeg.then_some(&ffmpeg),
-        false,
+        None,
         write_subs,
         sub_lang.as_deref(),
     );
 
-    let result = run_ytdlp_child(&manager, &id, &data_dir, args, &token).await;
+    let result = run_ytdlp_child(manager.clone(), &id, &data_dir, args, &token).await;
 
     let is_current = manager.is_running_current(&id, &token);
     manager.unregister_running_if(&id, &token);
@@ -475,12 +732,12 @@ pub async fn run_ytdlp_task(
                     &proxy,
                     limit_kbps,
                     has_ffmpeg.then_some(&ffmpeg),
-                    true,
+                    Some("firefox"),
                     write_subs,
                     sub_lang.as_deref(),
                 );
 
-                let result2 = run_ytdlp_child(&manager, &id, &data_dir, args2, &token2).await;
+                let result2 = run_ytdlp_child(manager.clone(), &id, &data_dir, args2, &token2).await;
                 let is_current2 = manager.is_running_current(&id, &token2);
                 manager.unregister_running_if(&id, &token2);
 
@@ -589,6 +846,9 @@ fn finish_ytdlp_task(mgr: &DownloadManager, id: &str) {
                 t.status = TaskStatus::Completed;
                 t.finished_at = Some(crate::download::manager::now_ms());
                 t.speed = 0.0;
+                // Reset completed_bytes so frontend shows the real merged file
+                // size directly, not accumulated multi-pass + final size.
+                t.completed_bytes = 0;
                 if let Some(total) = t.total_size {
                     t.downloaded = total;
                 }
@@ -607,7 +867,8 @@ fn finish_ytdlp_task(mgr: &DownloadManager, id: &str) {
 ///   - https://...(watch|shorts|embed)...v=<id> / <id>
 /// Returns "" when nothing can be confidently parsed.
 fn extract_video_id(url: &str) -> String {
-    let lower = url.to_lowercase();
+    // ASCII-only lowering keeps byte offsets valid for slicing `url`.
+    let lower = url.to_ascii_lowercase();
     for scheme in ["youtu.be/", "youtube.com/shorts/", "youtu.be/shorts/", "youtube.com/embed/", "youtube-nocookie.com/embed/"] {
         if let Some(idx) = lower.find(scheme) {
             let start = idx + scheme.len();
@@ -717,7 +978,7 @@ fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
                         }
                     }
 
-                    // Always update speed — use parsed value or 0 for unknown.
+                    // Always update speed ??use parsed value or 0 for unknown.
                     t.speed = speed.unwrap_or(0.0);
                 }
             }
@@ -733,11 +994,21 @@ fn process_ytdlp_line(l: &str, mgr: &DownloadManager, tid: &str, last_persist: &
         if cleaned.starts_with("[download] Destination:") {
             if let Some(path) = cleaned.strip_prefix("[download] Destination:") {
                 let p = path.trim();
-                if let Some(name) = Path::new(p).file_name().and_then(|n| n.to_str()) {
+                {
                     let mut tasks = mgr.tasks.lock();
                     if let Some(t) = tasks.get_mut(tid) {
-                        t.filename = name.to_string();
-                        t.file_path = p.to_string();
+                        // Multi-pass (YouTube video+audio): commit previous pass
+                        // so the frontend shows cumulative progress across passes.
+                        if t.total_size.is_some() || t.downloaded > 0 {
+                            t.completed_bytes += t.total_size.unwrap_or(t.downloaded);
+                            t.downloaded = 0;
+                            t.total_size = None;
+                            t.speed = 0.0;
+                        }
+                        if let Some(name) = Path::new(p).file_name().and_then(|n| n.to_str()) {
+                            t.filename = name.to_string();
+                            t.file_path = p.to_string();
+                        }
                     }
                 }
                 mgr.notify_tasks();
@@ -785,11 +1056,8 @@ fn quality_to_format(quality: &str) -> &'static str {
 
 fn parse_yt_dlp_progress(line: &str) -> Option<(f64, Option<u64>, Option<f64>)> {
     let cleaned_owned = strip_ansi_escapes(line);
-    let line = cleaned_owned.split('\r').last().unwrap_or("").trim();
-    if !line.starts_with("[download]") {
-        return None;
-    }
-    let body = line[11..].trim();
+    let line = cleaned_owned.trim_end_matches('\r').trim();
+    let body = line.strip_prefix("[download]")?.trim_start();
     if body.starts_with("Destination:")
         || body.starts_with("Downloading")
         || body.starts_with("Merging")
@@ -825,13 +1093,13 @@ fn parse_yt_dlp_progress(line: &str) -> Option<(f64, Option<u64>, Option<f64>)> 
             if first.eq_ignore_ascii_case("unknown") || first.eq_ignore_ascii_case("n/a") {
                 None
             } else {
-                parse_byte_size(first).or_else(|| {
-                    if idx + 2 < tokens.len() && !tokens[idx + 2].eq_ignore_ascii_case("ETA") {
-                        parse_byte_size(&format!("{}{}", first, tokens[idx + 2]))
-                    } else {
-                        None
-                    }
-                })
+                // Try combined token first (e.g. "1.20MiB/s" or "1.20 MiB/s").
+                let combined = if idx + 2 < tokens.len() && !tokens[idx + 2].eq_ignore_ascii_case("ETA") {
+                    parse_byte_size(&format!("{}{}", first, tokens[idx + 2]))
+                } else {
+                    None
+                };
+                combined.or_else(|| parse_byte_size(first))
             }
         }
     } else {
@@ -948,10 +1216,10 @@ mod tests {
 
     #[test]
     fn quality_mapping() {
-        assert_eq!(quality_to_format("best"), "bv[ext=mp4]+ba[ext=m4a]/bv[ext=mp4]+ba/bv+ba/b");
-        assert_eq!(quality_to_format("2160p"), "bv[height<=2160][ext=mp4]+ba[ext=m4a]/bv[height<=2160]+ba/b");
-        assert_eq!(quality_to_format("1080p"), "bv[height<=1080][ext=mp4]+ba[ext=m4a]/bv[height<=1080]+ba/b");
-        assert_eq!(quality_to_format("360p"), "bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360]+ba/b");
-        assert_eq!(quality_to_format("audio"), "ba[ext=m4a]/ba");
+        assert_eq!(quality_to_format("best"), "bv[ext=mp4]+ba[ext=m4a]/bv[ext=mp4]+ba/bv[ext=webm]+ba[ext=webm]/bv+ba/b");
+        assert_eq!(quality_to_format("2160p"), "bv[height<=2160][ext=mp4]+ba[ext=m4a]/bv[height<=2160][ext=webm]+ba[ext=webm]/bv[height<=2160]+ba/b");
+        assert_eq!(quality_to_format("1080p"), "bv[height<=1080][ext=mp4]+ba[ext=m4a]/bv[height<=1080][ext=webm]+ba[ext=webm]/bv[height<=1080]+ba/b");
+        assert_eq!(quality_to_format("360p"), "bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360][ext=webm]+ba[ext=webm]/bv[height<=360]+ba/b");
+        assert_eq!(quality_to_format("audio"), "ba[ext=m4a]/ba[ext=webm]/ba");
     }
 }

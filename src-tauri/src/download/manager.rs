@@ -315,6 +315,7 @@ pub fn notify_tasks(&self) {
             supports_ranges: false,
             filename_from_user: user_provided,
             segment_states: Vec::new(),
+            completed_bytes: 0,
             kind: kind.unwrap_or_else(|| "http".into()),
             quality,
             write_subs,

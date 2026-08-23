@@ -4,11 +4,7 @@ import TaskItem from "./TaskItem";
 import SpeedChart from "./SpeedChart";
 import { DownloadIcon } from "./icons";
 
-interface Props {
-  onNew: () => void;
-}
-
-export default function TaskList({ onNew }: Props) {
+export default function TaskList() {
   const { t } = useTranslation();
   const tasks = useFilteredTasks();
   const stats = useTaskStats();
@@ -23,9 +19,6 @@ export default function TaskList({ onNew }: Props) {
         <div className="max-w-sm text-[13px] leading-relaxed text-[var(--muted)]">
           {t("empty.hint")}
         </div>
-        <button onClick={onNew} className="btn btn-primary mt-3">
-          {t("header.newDownload")}
-        </button>
       </div>
     );
   }
