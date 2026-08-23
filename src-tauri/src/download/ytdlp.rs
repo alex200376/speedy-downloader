@@ -1,4 +1,4 @@
-﻿use crate::download::manager::DownloadManager;
+use crate::download::manager::DownloadManager;
 use crate::download::model::TaskStatus;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -257,6 +257,7 @@ fn build_ytdlp_args(
     cookie_browser: Option<&str>,
     write_subs: bool,
     sub_lang: Option<&str>,
+    sub_format: Option<&str>,
 ) -> Vec<String> {
     let is_youtube = url.contains("youtube.com") || url.contains("youtu.be");
     let output_template = format!("{}\\%(title).120B [%(id)s].%(ext)s", save_dir);
@@ -307,6 +308,16 @@ fn build_ytdlp_args(
         let lang = sub_lang.unwrap_or("en");
         args.push("--sub-lang".into());
         args.push(lang.to_string());
+        if let Some(fmt) = sub_format {
+            // Request the preferred container first, fall back to whatever
+            // exists, and let ffmpeg convert the result (needs ffmpeg).
+            args.push("--sub-format".into());
+            args.push(format!("{}/best", fmt));
+            if fmt != "best" {
+                args.push("--convert-subs".into());
+                args.push(fmt.to_string());
+            }
+        }
         args.push("--embed-subs".into());
     }
 
@@ -323,8 +334,8 @@ async fn run_ytdlp_child(
     args: Vec<String>,
     token: &CancellationToken,
 ) -> Result<(), String> {
-    let child = TokioCommand::new(ytdlp_path(data_dir))
-        .args(&args)
+    let mut cmd = TokioCommand::new(ytdlp_path(data_dir));
+    cmd.args(&args)
         .env("PYTHONUNBUFFERED", "1")
         // No console in a GUI app: give stdin /dev/null so any stray
         // interactive prompt fails fast instead of blocking forever
@@ -332,8 +343,10 @@ async fn run_ytdlp_child(
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW - no CMD flash
+    let child = cmd.spawn()
         .map_err(|e| format!("Failed to start yt-dlp: {}", e))?;
 
     let child = Arc::new(Mutex::new(child));
@@ -600,6 +613,7 @@ pub async fn run_ytdlp_task(
     let has_ffmpeg = ffmpeg.exists();
     let write_subs = task.write_subs;
     let sub_lang = task.sub_lang.clone();
+    let sub_format = task.sub_format.clone();
     let _is_youtube = url.contains("youtube.com") || url.contains("youtu.be");
 
     manager.set_status(&id, TaskStatus::Downloading, None);
@@ -627,13 +641,15 @@ pub async fn run_ytdlp_task(
             }
             pa.push(purl);
 
-            let attempt = TokioCommand::new(ytdlp_path(&pmgr.data_dir))
-                .args(&pa)
+            let mut pcmd = TokioCommand::new(ytdlp_path(&pmgr.data_dir));
+            pcmd.args(&pa)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .output();
+                .kill_on_drop(true);
+            #[cfg(target_os = "windows")]
+            pcmd.creation_flags(0x08000000); // CREATE_NO_WINDOW - no CMD flash
+            let attempt = pcmd.output();
             let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(45), attempt).await else {
                 return;
             };
@@ -700,6 +716,7 @@ pub async fn run_ytdlp_task(
         None,
         write_subs,
         sub_lang.as_deref(),
+        sub_format.as_deref(),
     );
 
     let result = run_ytdlp_child(manager.clone(), &id, &data_dir, args, &token).await;
@@ -735,6 +752,7 @@ pub async fn run_ytdlp_task(
                     Some("firefox"),
                     write_subs,
                     sub_lang.as_deref(),
+                    sub_format.as_deref(),
                 );
 
                 let result2 = run_ytdlp_child(manager.clone(), &id, &data_dir, args2, &token2).await;

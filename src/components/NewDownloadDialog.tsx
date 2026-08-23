@@ -69,6 +69,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
   const [headersText, setHeadersText] = useState("");
   const [writeSubs, setWriteSubs] = useState(false);
   const [subLang, setSubLang] = useState("en");
+  const [subFormat, setSubFormat] = useState<string | null>(null);
   const [availableSubs, setAvailableSubs] = useState<{ code: string; name: string; auto: boolean }[]>([]);
   const [subsLoading, setSubsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -90,6 +91,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       setQuality("best");
       setWriteSubs(false);
       setSubLang("en");
+      setSubFormat(null);
       setAvailableSubs([]);
     }
   }, [open, initialUrl, grab, settings]);
@@ -175,6 +177,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
         quality: isVideo ? quality : undefined,
         write_subs: isVideo && writeSubs,
         sub_lang: isVideo && writeSubs ? subLang : undefined,
+        sub_format: isVideo && writeSubs ? subFormat : undefined,
       });
       setBusy(false);
       if (task) {
@@ -196,6 +199,7 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
       quality: isVideo ? quality : undefined,
       write_subs: isVideo && writeSubs,
       sub_lang: isVideo && writeSubs ? subLang : undefined,
+      sub_format: isVideo && writeSubs ? subFormat : undefined,
     });
     setBusy(false);
     if (task) {
@@ -372,7 +376,8 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
                   </label>
                 </div>
                 {writeSubs && (
-                  <div className="mt-2">
+                  <>
+                    <div className="mt-2">
                     {availableSubs.length > 0 ? (
                       <select
                         value={subLang}
@@ -394,6 +399,19 @@ export default function NewDownloadDialog({ open, initialUrl, grab, onClose }: P
                       />
                     )}
                   </div>
+                  <div className="mt-2">
+                    <select
+                      value={subFormat ?? ""}
+                      onChange={(e) => setSubFormat(e.target.value || null)}
+                      className={`${input} cursor-pointer`}
+                    >
+                      <option value="">{t("dialog.subFormatAuto") || "Auto (no conversion)"}</option>
+                      <option value="srt">SRT</option>
+                      <option value="vtt">VTT</option>
+                      <option value="ass">ASS</option>
+                    </select>
+                  </div>
+                  </>
                 )}
               </div>
             </>

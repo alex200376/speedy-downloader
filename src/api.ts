@@ -104,6 +104,7 @@ export const api = {
     quality?: string;
     write_subs?: boolean;
     sub_lang?: string;
+    sub_format?: string | null;
   }): Promise<{ task?: DownloadTask; error?: string }> {
     try {
       const r = await request<DownloadTask>("/api/v1/tasks", {
@@ -153,6 +154,7 @@ export const api = {
       quality?: string;
       write_subs?: boolean;
       sub_lang?: string;
+      sub_format?: string | null;
     },
   ): Promise<{ task?: DownloadTask; error?: string }> {
     try {

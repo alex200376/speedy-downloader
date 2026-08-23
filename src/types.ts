@@ -47,6 +47,7 @@ export interface DownloadTask {
   quality?: string | null;
   write_subs?: boolean;
   sub_lang?: string | null;
+  sub_format?: string | null;
 }
 
 export interface Settings {

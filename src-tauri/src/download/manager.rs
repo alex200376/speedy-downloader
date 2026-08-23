@@ -269,6 +269,7 @@ pub fn notify_tasks(&self) {
         quality: Option<String>,
         write_subs: bool,
         sub_lang: Option<String>,
+        sub_format: Option<String>,
     ) -> Result<DownloadTask, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("URL 必须是 http(s) 地址".into());
@@ -320,6 +321,7 @@ pub fn notify_tasks(&self) {
             quality,
             write_subs,
             sub_lang,
+            sub_format,
         };
 
         self.tasks.lock().insert(id.clone(), task.clone());
@@ -346,6 +348,7 @@ pub fn notify_tasks(&self) {
         quality: Option<String>,
         write_subs: bool,
         sub_lang: Option<String>,
+        sub_format: Option<String>,
     ) -> Result<DownloadTask, String> {
         let mut tasks = self.tasks.lock();
         let task = tasks.get_mut(id).ok_or_else(|| "任务不存在".to_string())?;
@@ -386,6 +389,9 @@ pub fn notify_tasks(&self) {
         }
         if sub_lang.is_some() {
             task.sub_lang = sub_lang;
+        }
+        if sub_format.is_some() {
+            task.sub_format = sub_format;
         }
         if settings.sort_by_type {
             if let Some(sub) = category_for(&task.filename) {

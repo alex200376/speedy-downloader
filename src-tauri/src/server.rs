@@ -43,6 +43,8 @@ pub struct CreateTaskBody {
     pub write_subs: bool,
     #[serde(default)]
     pub sub_lang: Option<String>,
+    #[serde(default)]
+    pub sub_format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +60,8 @@ pub struct ConfirmTaskBody {
     pub write_subs: bool,
     #[serde(default)]
     pub sub_lang: Option<String>,
+    #[serde(default)]
+    pub sub_format: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -144,6 +148,7 @@ async fn create_task(
         body.quality,
         body.write_subs,
         body.sub_lang,
+        body.sub_format,
     ) {
         Ok(task) => {
             if task.status != crate::download::TaskStatus::Pending {
@@ -190,7 +195,7 @@ async fn confirm_task(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<ConfirmTaskBody>,
 ) -> Json<ApiResponse<DownloadTask>> {
-    match st.manager.confirm_pending(&id, body.filename, body.save_dir, body.segments, body.headers, body.quality, body.write_subs, body.sub_lang) {
+    match st.manager.confirm_pending(&id, body.filename, body.save_dir, body.segments, body.headers, body.quality, body.write_subs, body.sub_lang, body.sub_format) {
         Ok(task) => {
             if let Some(tx) = st.pending.lock().unwrap().remove(&id) {
                 let _ = tx.send(Ok(task.clone()));
@@ -433,6 +438,7 @@ async fn create_batch_tasks(
             Some("video".into()),
             None,
             false,
+            None,
             None,
         ) {
             Ok(task) => tasks.push(task.masked()),
