@@ -1,7 +1,7 @@
-{
+﻿{
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SpeedDownloader",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "identifier": "com.speedy.downloader",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "SpeedDownloader 极速下载器",
+        "title": "SpeedDownloader ??頧賢",
         "width": 800,
         "height": 540,
         "minWidth": 580,
